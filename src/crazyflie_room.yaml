@@ -1,0 +1,59 @@
+room:
+  size: [4.0, 3.0, 2.2]
+  wall_thickness: 0.05
+  floor_color: [0.35, 0.35, 0.35]
+  wall_color: [0.75, 0.78, 0.82]
+
+landmark_light:
+  position: [1.95, 0.0, 1.10]
+  radius_m: 0.10
+  color: [1.0, 0.95, 0.05]
+  light_intensity: 90000.0
+
+obstacles:
+  - name: obstacle_1
+    position: [0.40, 0.00, 0.45]
+    size: [0.35, 0.35, 0.90]
+    color: [0.80, 0.20, 0.20]
+
+  - name: obstacle_2
+    position: [-0.90, -0.65, 0.22]
+    size: [0.80, 0.45, 0.44]
+    color: [0.20, 0.45, 0.80]
+
+drone:
+  initial_pose:
+    x: -1.45
+    y: -0.90
+    z: 0.70
+    yaw_deg: 0.0
+
+  collision_radius_m: 0.12
+
+  propeller_spin:
+    enabled: true
+    hover_deg_s: 1800.0
+    command_gain_deg_s: 2200.0
+
+keyboard:
+  # Terminal keyboard input, not Isaac viewport input.
+  # Keep PowerShell focused and press the keys there.
+  command_hold_s: 0.30
+  forward_speed_m_s: 0.35
+  lateral_speed_m_s: 0.25
+  vertical_speed_m_s: 0.20
+  yaw_rate_deg_s: 55.0
+
+sensors:
+  multiranger:
+    max_range_m: 4.0
+    origin_offset_body: [0.0, 0.0, 0.0]
+
+logging:
+  print_every_s: 0.25
+  csv_every_s: 0.05
+
+runtime:
+  fps: 60.0
+  enable_csv: true
+  create_front_camera_folder_only: true

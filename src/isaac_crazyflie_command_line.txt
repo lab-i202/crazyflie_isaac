@@ -1,0 +1,1 @@
+conda activate env_isaaclab; clear; C:\isaac-lab\IsaacLab\isaaclab.bat -p C:\Users\Admin\Documents\Python\isaac_sim_test\crazyflie_isaac_sim\crazyflie_room_keyboard_safe.py --config C:\Users\Admin\Documents\Python\isaac_sim_test\crazyflie_isaac_sim\crazyflie_room.yaml
