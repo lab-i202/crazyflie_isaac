@@ -32,6 +32,20 @@ DEFAULT_CRAZYFLIE_ROOM_PROFILE: dict[str, Any] = {
         "has_roof": False,
         "floor_color": [0.35, 0.35, 0.35],
         "wall_color": [0.75, 0.78, 0.82],
+        "visual": {
+            "floor": {
+                "opacity": 1.0,
+                "roughness": 0.65,
+                "metallic": 0.0,
+                "reflectance": 0.18
+            },
+            "walls": {
+                "opacity": 1.0,
+                "roughness": 0.55,
+                "metallic": 0.0,
+                "reflectance": 0.35
+            }
+        },
     },
     "obstacles": [
         {
@@ -42,6 +56,13 @@ DEFAULT_CRAZYFLIE_ROOM_PROFILE: dict[str, Any] = {
             "size_m": [0.35, 0.35, 0.5],
             "color": [0.8, 0.25, 0.15],
             "collision": True,
+            "negative": False,
+            "visual": {
+                "opacity": 1.0,
+                "roughness": 0.55,
+                "metallic": 0.0,
+                "reflectance": 0.35,
+            },
         }
     ],
     "landmark": {
@@ -99,15 +120,27 @@ DEFAULT_CRAZYFLIE_ROOM_PROFILE: dict[str, Any] = {
             "clipping_range_m": [0.03, 20.0],
             "resolution": [640, 360],
             "capture_rgb": False,
+            "capture_every_n_frames": 1,
         },
         "isometric": {
             "enabled": True,
             "prim_path": "/World/IsometricCamera",
-            "position_m": [3.0, -3.0, 2.2],
-            "look_at_m": [0.0, 0.0, 0.8],
-            "focal_length_mm": 35.0,
+            "position_m": [3.0, -3.0, 2.6],
+            "look_at_m": [0.0, 0.0, 0.75],
+            "auto_frame_room": True,
+            "azimuth_deg": -45.0,
+            "elevation_deg": 35.0,
+            "distance_scale": 1.85,
+            "padding_m": 0.35,
+            "focal_length_mm": 24.0,
             "resolution": [1280, 720],
             "capture_rgb": False,
+            "capture_every_n_frames": 1,
+        },
+        "capture": {
+            "rt_subframes": 1,
+            "camera_params": False,
+            "wait_for_render": True
         },
     },
     "runtime": {
@@ -131,7 +164,7 @@ DEFAULT_CRAZYFLIE_ROOM_PROFILE: dict[str, Any] = {
 }
 
 CONTROL_MODES = ["keyboard_terminal", "scripted_hover", "static"]
-OBSTACLE_KINDS = ["box", "sphere", "cylinder"]
+OBSTACLE_KINDS = ["box", "wall", "sphere", "cylinder", "pillar", "floor_patch"]
 ASSET_MODES = ["isaac_builtin", "local_usd"]
 
 
@@ -184,11 +217,43 @@ def normalize_crazyflie_room_profile(profile: dict[str, Any]) -> None:
             "size_m": [0.3, 0.3, 0.5],
             "color": [0.8, 0.25, 0.15],
             "collision": True,
+            "negative": False,
+            "visual": {
+                "opacity": 1.0,
+                "roughness": 0.55,
+                "metallic": 0.0,
+                "reflectance": 0.35,
+            },
         }
         if isinstance(obstacle, dict):
             _deep_update(default_obstacle, obstacle)
         normalized_obstacles.append(default_obstacle)
     profile["obstacles"] = normalized_obstacles
+
+    room = profile.setdefault("room", {})
+    visual = room.setdefault("visual", {})
+    visual.setdefault("floor", {})
+    visual.setdefault("walls", {})
+    for key, defaults in {
+        "floor": {"opacity": 1.0, "roughness": 0.65, "metallic": 0.0, "reflectance": 0.18},
+        "walls": {"opacity": 1.0, "roughness": 0.55, "metallic": 0.0, "reflectance": 0.35},
+    }.items():
+        for field, value in defaults.items():
+            visual[key].setdefault(field, value)
+
+    cameras = profile.setdefault("cameras", {})
+    cameras.setdefault("capture", {"rt_subframes": 1, "camera_params": False, "wait_for_render": True})
+    for camera_key in ["onboard", "isometric"]:
+        if camera_key in cameras and isinstance(cameras[camera_key], dict):
+            cameras[camera_key].setdefault("capture_every_n_frames", 1)
+
+    if "isometric" in cameras and isinstance(cameras["isometric"], dict):
+        isometric = cameras["isometric"]
+        isometric.setdefault("auto_frame_room", True)
+        isometric.setdefault("azimuth_deg", -45.0)
+        isometric.setdefault("elevation_deg", 35.0)
+        isometric.setdefault("distance_scale", 1.85)
+        isometric.setdefault("padding_m", 0.35)
 
 
 def sanitize_filename(value: str) -> str:
@@ -258,6 +323,14 @@ def _validate_room(room: Any) -> None:
     _require_bool(room, "has_roof")
     _validate_color3(room.get("floor_color"), "room.floor_color")
     _validate_color3(room.get("wall_color"), "room.wall_color")
+    visual = room.get("visual", {})
+    if not isinstance(visual, dict):
+        raise ValueError("room.visual must be a JSON object.")
+    for material_name in ["floor", "walls"]:
+        material = visual.get(material_name, {})
+        if not isinstance(material, dict):
+            raise ValueError(f"room.visual.{material_name} must be a JSON object.")
+        _validate_obstacle_visual(material, f"room.visual.{material_name}")
 
 
 def _validate_obstacles(obstacles: Any) -> None:
@@ -280,6 +353,23 @@ def _validate_obstacles(obstacles: Any) -> None:
         _validate_positive_vector3(obstacle.get("size_m"), f"{prefix}.size_m")
         _validate_color3(obstacle.get("color"), f"{prefix}.color")
         _require_bool(obstacle, "collision")
+        _require_bool(obstacle, "negative", required=False)
+        _validate_obstacle_visual(obstacle.get("visual", {}), f"{prefix}.visual")
+
+
+def _validate_obstacle_visual(visual: Any, name: str) -> None:
+    if visual is None:
+        return
+    if not isinstance(visual, dict):
+        raise ValueError(f"{name} must be a JSON object.")
+    for key in ["opacity", "roughness", "metallic", "reflectance"]:
+        if key not in visual:
+            continue
+        value = visual[key]
+        if not isinstance(value, (int, float)) or isinstance(value, bool):
+            raise ValueError(f"{name}.{key} must be a number.")
+        if float(value) < 0.0 or float(value) > 1.0:
+            raise ValueError(f"{name}.{key} must be between 0 and 1.")
 
 
 def _validate_landmark(landmark: Any) -> None:
@@ -375,12 +465,31 @@ def _validate_cameras(cameras: Any) -> None:
             raise ValueError(f"cameras.{name}.focal_length_mm must be greater than zero.")
         _validate_resolution(cameras[name].get("resolution"), f"cameras.{name}.resolution")
         _require_bool(cameras[name], "capture_rgb")
+        _require_positive_int(cameras[name], "capture_every_n_frames", required=False)
+
+    capture = cameras.get("capture", {})
+    if not isinstance(capture, dict):
+        raise ValueError("cameras.capture must be a JSON object.")
+    _require_positive_int(capture, "rt_subframes", required=False)
+    _require_bool(capture, "camera_params", required=False)
+    _require_bool(capture, "wait_for_render", required=False)
 
     _validate_vector3(cameras["onboard"].get("rotation_deg"), "cameras.onboard.rotation_deg")
     _require_number(cameras["onboard"], "horizontal_aperture_mm")
     _require_number(cameras["onboard"], "vertical_aperture_mm")
     _validate_positive_vector2(cameras["onboard"].get("clipping_range_m"), "cameras.onboard.clipping_range_m")
     _validate_vector3(cameras["isometric"].get("look_at_m"), "cameras.isometric.look_at_m")
+    _require_bool(cameras["isometric"], "auto_frame_room", required=False)
+    for key in ["azimuth_deg", "elevation_deg", "distance_scale", "padding_m"]:
+        _require_number(cameras["isometric"], key, required=False)
+    if "elevation_deg" in cameras["isometric"]:
+        elevation = float(cameras["isometric"]["elevation_deg"])
+        if elevation <= -89.0 or elevation >= 89.0:
+            raise ValueError("cameras.isometric.elevation_deg must be between -89 and 89 degrees.")
+    if "distance_scale" in cameras["isometric"] and float(cameras["isometric"]["distance_scale"]) <= 0.0:
+        raise ValueError("cameras.isometric.distance_scale must be greater than zero.")
+    if "padding_m" in cameras["isometric"] and float(cameras["isometric"]["padding_m"]) < 0.0:
+        raise ValueError("cameras.isometric.padding_m must be zero or positive.")
 
 
 def _validate_runtime(runtime: Any) -> None:

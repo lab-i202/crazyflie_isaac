@@ -4,7 +4,7 @@
   "profile_path": "C:\\Users\\Admin\\Documents\\Github\\crazyflie_isaac\\src\\crazyflie_room\\profiles\\crazyflie\\crazyflie_room_basic.json",
   "crazyflie_asset_path": "https://omniverse-content-production.s3-us-west-2.amazonaws.com/Assets/Isaac/5.1/Isaac/Robots/Bitcraze/Crazyflie/cf2x.usd",
   "telemetry_output_dir": "C:\\Users\\Admin\\Documents\\Github\\crazyflie_isaac\\src\\crazyflie_room\\outputs\\crazyflie_room_basic\\telemetry",
-  "camera_capture": "disabled_by_default",
+  "camera_capture": "enabled",
   "control_mode": "keyboard_terminal",
-  "created_at_utc": "2026-07-10T15:17:01.275172+00:00"
+  "created_at_utc": "2026-07-10T16:11:07.252791+00:00"
 }

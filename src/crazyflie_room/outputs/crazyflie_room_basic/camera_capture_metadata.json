@@ -1,0 +1,27 @@
+{
+  "scene_name": "crazyflie_room_basic",
+  "rt_subframes": 1,
+  "wait_for_render": true,
+  "camera_params": false,
+  "cameras": [
+    {
+      "camera_key": "onboard",
+      "prim_path": "/World/CrazyflieRig/FrontCamera",
+      "output_folder": "C:\\Users\\Admin\\Documents\\Github\\crazyflie_isaac\\src\\crazyflie_room\\outputs\\crazyflie_room_basic\\camera_onboard",
+      "resolution": [
+        640,
+        360
+      ]
+    },
+    {
+      "camera_key": "isometric",
+      "prim_path": "/World/IsometricCamera",
+      "output_folder": "C:\\Users\\Admin\\Documents\\Github\\crazyflie_isaac\\src\\crazyflie_room\\outputs\\crazyflie_room_basic\\camera_isometric",
+      "resolution": [
+        1280,
+        720
+      ]
+    }
+  ],
+  "note": "Capture uses Replicator BasicWriter and existing USD camera prims."
+}

@@ -260,7 +260,7 @@ def run_crazyflie_room_scene(
     import carb
     import omni.client
     import omni.usd
-    from pxr import Gf, UsdGeom, UsdLux, UsdPhysics
+    from pxr import Gf, Sdf, UsdGeom, UsdLux, UsdPhysics, UsdShade
 
     import isaacsim.core.utils.stage as stage_utils
     from isaacsim.storage.native import get_assets_root_path
@@ -288,6 +288,7 @@ def run_crazyflie_room_scene(
         write_latest_state_json=bool(scene_config["runtime"].get("write_latest_state_json", True)),
         write_state_history_csv=bool(scene_config["runtime"].get("write_state_history_csv", True)),
     )
+    camera_capture_session: dict[str, Any] | None = None
 
     try:
         context = omni.usd.get_context()
@@ -302,6 +303,7 @@ def run_crazyflie_room_scene(
         UsdGeom.Xform.Define(stage, "/World/Room")
         UsdGeom.Xform.Define(stage, "/World/Obstacles")
         UsdGeom.Xform.Define(stage, "/World/Landmark")
+        UsdGeom.Xform.Define(stage, "/World/Materials")
 
         physics_scene = UsdPhysics.Scene.Define(stage, "/World/PhysicsScene")
         physics_scene.CreateGravityDirectionAttr().Set(Gf.Vec3f(0.0, 0.0, -1.0))
@@ -315,8 +317,8 @@ def run_crazyflie_room_scene(
         sun.CreateAngleAttr(0.5)
 
         room = BoxRoom(scene_config)
-        build_room(stage, scene_config, room, Gf, UsdGeom)
-        build_obstacles(stage, scene_config, room, Gf, UsdGeom)
+        build_room(stage, scene_config, room, Gf, UsdGeom, UsdShade, Sdf)
+        build_obstacles(stage, scene_config, room, Gf, UsdGeom, UsdShade, Sdf)
         build_landmark(stage, scene_config, Gf, UsdLux, UsdGeom)
 
         crazyflie_cfg = scene_config["crazyflie"]
@@ -363,7 +365,14 @@ def run_crazyflie_room_scene(
             UsdGeom=UsdGeom,
             set_camera_view=set_camera_view,
         )
-        write_camera_capture_disabled_notes(output_root=output_root, scene_name=scene_name)
+        camera_capture_session = create_camera_capture_session(
+            cfg=scene_config,
+            output_root=output_root,
+            scene_name=scene_name,
+            carb=carb,
+        )
+        if camera_capture_session is None:
+            write_camera_capture_disabled_notes(output_root=output_root, scene_name=scene_name)
 
         save_usd_path = str(scene_config["runtime"].get("save_usd_path", "")).strip()
         if save_usd_path:
@@ -379,7 +388,7 @@ def run_crazyflie_room_scene(
                 "profile_path": str(profile_path) if profile_path else "",
                 "crazyflie_asset_path": asset_path,
                 "telemetry_output_dir": str(telemetry.output_dir),
-                "camera_capture": "disabled_by_default",
+                "camera_capture": "enabled" if camera_capture_session is not None else "disabled",
                 "control_mode": scene_config["runtime"].get("control_mode"),
             }
         )
@@ -458,12 +467,14 @@ def run_crazyflie_room_scene(
                 last_print_s = elapsed_s
 
             simulation_app.update()
+            step_camera_capture(camera_capture_session, frame)
             frame += 1
             sleep_s = dt - (time.perf_counter() - now)
             if sleep_s > 0.0:
                 time.sleep(sleep_s)
 
     finally:
+        cleanup_camera_capture(camera_capture_session)
         telemetry.close()
 
 
@@ -509,7 +520,7 @@ def integrate_pose(pose: Pose, cmd: VelocityCommand, dt: float) -> Pose:
     )
 
 
-def build_room(stage: Any, cfg: dict[str, Any], room: BoxRoom, Gf: Any, UsdGeom: Any) -> None:
+def build_room(stage: Any, cfg: dict[str, Any], room: BoxRoom, Gf: Any, UsdGeom: Any, UsdShade: Any, Sdf: Any) -> None:
     if not room.enabled:
         return
 
@@ -518,6 +529,9 @@ def build_room(stage: Any, cfg: dict[str, Any], room: BoxRoom, Gf: Any, UsdGeom:
     t = float(room_cfg["wall_thickness_m"])
     floor_color = tuple(float(v) for v in room_cfg["floor_color"])
     wall_color = tuple(float(v) for v in room_cfg["wall_color"])
+    room_visual = room_cfg.get("visual", {})
+    floor_visual = room_visual.get("floor", {"opacity": 1.0, "roughness": 0.65, "metallic": 0.0, "reflectance": 0.18})
+    wall_visual = room_visual.get("walls", {"opacity": 1.0, "roughness": 0.55, "metallic": 0.0, "reflectance": 0.35})
 
     create_box(
         stage=stage,
@@ -527,17 +541,280 @@ def build_room(stage: Any, cfg: dict[str, Any], room: BoxRoom, Gf: Any, UsdGeom:
         color=floor_color,
         Gf=Gf,
         UsdGeom=UsdGeom,
+        UsdShade=UsdShade,
+        Sdf=Sdf,
+        visual=floor_visual,
     )
-    create_box(stage, "/World/Room/Wall_X_Pos", (0.5 * sx + 0.5 * t, 0.0, 0.5 * sz), (t, sy, sz), wall_color, Gf, UsdGeom)
-    create_box(stage, "/World/Room/Wall_X_Neg", (-0.5 * sx - 0.5 * t, 0.0, 0.5 * sz), (t, sy, sz), wall_color, Gf, UsdGeom)
-    create_box(stage, "/World/Room/Wall_Y_Pos", (0.0, 0.5 * sy + 0.5 * t, 0.5 * sz), (sx, t, sz), wall_color, Gf, UsdGeom)
-    create_box(stage, "/World/Room/Wall_Y_Neg", (0.0, -0.5 * sy - 0.5 * t, 0.5 * sz), (sx, t, sz), wall_color, Gf, UsdGeom)
+    cutouts = collect_wall_cutouts(cfg, sx=sx, sy=sy, sz=sz)
+    create_x_wall_with_cutout(stage, "/World/Room/Wall_X_Pos", 0.5 * sx + 0.5 * t, sy, sz, t, wall_color, cutouts["x_pos"], Gf, UsdGeom, UsdShade, Sdf, wall_visual)
+    create_x_wall_with_cutout(stage, "/World/Room/Wall_X_Neg", -0.5 * sx - 0.5 * t, sy, sz, t, wall_color, cutouts["x_neg"], Gf, UsdGeom, UsdShade, Sdf, wall_visual)
+    create_y_wall_with_cutout(stage, "/World/Room/Wall_Y_Pos", 0.5 * sy + 0.5 * t, sx, sz, t, wall_color, cutouts["y_pos"], Gf, UsdGeom, UsdShade, Sdf, wall_visual)
+    create_y_wall_with_cutout(stage, "/World/Room/Wall_Y_Neg", -0.5 * sy - 0.5 * t, sx, sz, t, wall_color, cutouts["y_neg"], Gf, UsdGeom, UsdShade, Sdf, wall_visual)
 
     if bool(room_cfg.get("has_roof", False)):
-        create_box(stage, "/World/Room/Roof", (0.0, 0.0, sz + 0.5 * t), (sx, sy, t), wall_color, Gf, UsdGeom)
+        create_box(stage, "/World/Room/Roof", (0.0, 0.0, sz + 0.5 * t), (sx, sy, t), wall_color, Gf, UsdGeom, UsdShade=UsdShade, Sdf=Sdf, visual=wall_visual)
 
 
-def build_obstacles(stage: Any, cfg: dict[str, Any], room: BoxRoom, Gf: Any, UsdGeom: Any) -> None:
+
+def collect_wall_cutouts(cfg: dict[str, Any], sx: float, sy: float, sz: float) -> dict[str, list[dict[str, float]]]:
+    """Collect rectangular negative obstacles that cut generated room walls.
+
+    This is intentionally constrained: the runner does not do arbitrary CSG booleans.
+    A negative obstacle is interpreted as an invisible wall cutter when its footprint
+    touches or nearly touches one generated room wall. Any obstacle kind is accepted;
+    its axis-aligned bounding box is used as the rectangular cutter.
+    """
+    eps = 1e-6
+    wall_snap_tolerance = max(float(cfg["room"].get("wall_thickness_m", 0.05)) * 2.0, 0.10)
+    cutouts: dict[str, list[dict[str, float]]] = {"x_pos": [], "x_neg": [], "y_pos": [], "y_neg": []}
+    x_room_min = -0.5 * sx
+    x_room_max = 0.5 * sx
+    y_room_min = -0.5 * sy
+    y_room_max = 0.5 * sy
+
+    for obstacle in cfg.get("obstacles", []):
+        if not bool(obstacle.get("enabled", True)) or not bool(obstacle.get("negative", False)):
+            continue
+        px, py, pz = [float(v) for v in obstacle.get("position_m", [0.0, 0.0, 0.0])]
+        ox, oy, oz = [float(v) for v in obstacle.get("size_m", [0.0, 0.0, 0.0])]
+
+        x0 = px - 0.5 * ox
+        x1 = px + 0.5 * ox
+        y0 = py - 0.5 * oy
+        y1 = py + 0.5 * oy
+        z0 = max(0.0, pz - 0.5 * oz)
+        z1 = min(sz, pz + 0.5 * oz)
+        if z1 <= z0 + eps:
+            print(f"WARNING: negative obstacle '{obstacle.get('name', '<unnamed>')}' has no vertical overlap with the room wall height.")
+            continue
+
+        candidates: list[tuple[float, str]] = [
+            (abs(x1 - x_room_max), "x_pos"),
+            (abs(x0 - x_room_min), "x_neg"),
+            (abs(y1 - y_room_max), "y_pos"),
+            (abs(y0 - y_room_min), "y_neg"),
+        ]
+        candidates.sort(key=lambda item: item[0])
+        distance_to_wall, wall_key = candidates[0]
+        reaches_wall = (
+            x1 >= x_room_max - wall_snap_tolerance
+            or x0 <= x_room_min + wall_snap_tolerance
+            or y1 >= y_room_max - wall_snap_tolerance
+            or y0 <= y_room_min + wall_snap_tolerance
+        )
+        if not reaches_wall:
+            print(
+                f"WARNING: negative obstacle '{obstacle.get('name', '<unnamed>')}' is not close enough to a room wall for a cutout. "
+                f"Nearest wall distance={distance_to_wall:.3f} m, tolerance={wall_snap_tolerance:.3f} m. It will be invisible and non-colliding."
+            )
+            continue
+
+        if wall_key == "x_pos":
+            u0 = max(y_room_min, y0)
+            u1 = min(y_room_max, y1)
+        elif wall_key == "x_neg":
+            u0 = max(y_room_min, y0)
+            u1 = min(y_room_max, y1)
+        elif wall_key == "y_pos":
+            u0 = max(x_room_min, x0)
+            u1 = min(x_room_max, x1)
+        else:
+            u0 = max(x_room_min, x0)
+            u1 = min(x_room_max, x1)
+
+        if u1 <= u0 + eps:
+            print(f"WARNING: negative obstacle '{obstacle.get('name', '<unnamed>')}' does not overlap the selected wall span.")
+            continue
+        cutouts[wall_key].append({"u0": u0, "u1": u1, "z0": z0, "z1": z1})
+        print(
+            f"Negative obstacle '{obstacle.get('name', '<unnamed>')}' assigned to wall cutout {wall_key}: "
+            f"u=[{u0:+.3f}, {u1:+.3f}], z=[{z0:+.3f}, {z1:+.3f}]."
+        )
+
+    for wall_name, wall_cutouts in cutouts.items():
+        if len(wall_cutouts) > 1:
+            print(
+                f"WARNING: {wall_name} has {len(wall_cutouts)} negative cutouts. "
+                "This runner currently applies only the first one to keep wall generation deterministic."
+            )
+            cutouts[wall_name] = wall_cutouts[:1]
+    return cutouts
+
+
+def negative_obstacle_reaches_room_wall(cfg: dict[str, Any], obstacle: dict[str, Any]) -> bool:
+    room_cfg = cfg["room"]
+    sx, sy, sz = [float(v) for v in room_cfg["size_m"]]
+    tolerance = max(float(room_cfg.get("wall_thickness_m", 0.05)) * 2.0, 0.10)
+    px, py, pz = [float(v) for v in obstacle.get("position_m", [0.0, 0.0, 0.0])]
+    ox, oy, oz = [float(v) for v in obstacle.get("size_m", [0.0, 0.0, 0.0])]
+    x0 = px - 0.5 * ox
+    x1 = px + 0.5 * ox
+    y0 = py - 0.5 * oy
+    y1 = py + 0.5 * oy
+    z0 = pz - 0.5 * oz
+    z1 = pz + 0.5 * oz
+    z_overlaps = z1 > 0.0 and z0 < sz
+    if not z_overlaps:
+        return False
+    return (
+        x1 >= 0.5 * sx - tolerance
+        or x0 <= -0.5 * sx + tolerance
+        or y1 >= 0.5 * sy - tolerance
+        or y0 <= -0.5 * sy + tolerance
+    )
+
+def create_x_wall_with_cutout(
+    stage: Any,
+    path: str,
+    x_center: float,
+    sy: float,
+    sz: float,
+    thickness: float,
+    color: Vector3,
+    cutouts: list[dict[str, float]],
+    Gf: Any,
+    UsdGeom: Any,
+    UsdShade: Any,
+    Sdf: Any,
+    visual: dict[str, Any],
+) -> None:
+    if not cutouts:
+        create_box(stage, path, (x_center, 0.0, 0.5 * sz), (thickness, sy, sz), color, Gf, UsdGeom, UsdShade=UsdShade, Sdf=Sdf, visual=visual)
+        return
+
+    cutout = cutouts[0]
+    y_min = -0.5 * sy
+    y_max = 0.5 * sy
+    y0 = clamp(float(cutout["u0"]), y_min, y_max)
+    y1 = clamp(float(cutout["u1"]), y_min, y_max)
+    z0 = clamp(float(cutout["z0"]), 0.0, sz)
+    z1 = clamp(float(cutout["z1"]), 0.0, sz)
+    _create_rectangular_wall_segments(
+        stage=stage,
+        path=path,
+        fixed_axis="x",
+        fixed_center=x_center,
+        u_min=y_min,
+        u_max=y_max,
+        z_min=0.0,
+        z_max=sz,
+        hole_u0=y0,
+        hole_u1=y1,
+        hole_z0=z0,
+        hole_z1=z1,
+        thickness=thickness,
+        color=color,
+        Gf=Gf,
+        UsdGeom=UsdGeom,
+        UsdShade=UsdShade,
+        Sdf=Sdf,
+        visual=visual,
+    )
+
+
+def create_y_wall_with_cutout(
+    stage: Any,
+    path: str,
+    y_center: float,
+    sx: float,
+    sz: float,
+    thickness: float,
+    color: Vector3,
+    cutouts: list[dict[str, float]],
+    Gf: Any,
+    UsdGeom: Any,
+    UsdShade: Any,
+    Sdf: Any,
+    visual: dict[str, Any],
+) -> None:
+    if not cutouts:
+        create_box(stage, path, (0.0, y_center, 0.5 * sz), (sx, thickness, sz), color, Gf, UsdGeom, UsdShade=UsdShade, Sdf=Sdf, visual=visual)
+        return
+
+    cutout = cutouts[0]
+    x_min = -0.5 * sx
+    x_max = 0.5 * sx
+    x0 = clamp(float(cutout["u0"]), x_min, x_max)
+    x1 = clamp(float(cutout["u1"]), x_min, x_max)
+    z0 = clamp(float(cutout["z0"]), 0.0, sz)
+    z1 = clamp(float(cutout["z1"]), 0.0, sz)
+    _create_rectangular_wall_segments(
+        stage=stage,
+        path=path,
+        fixed_axis="y",
+        fixed_center=y_center,
+        u_min=x_min,
+        u_max=x_max,
+        z_min=0.0,
+        z_max=sz,
+        hole_u0=x0,
+        hole_u1=x1,
+        hole_z0=z0,
+        hole_z1=z1,
+        thickness=thickness,
+        color=color,
+        Gf=Gf,
+        UsdGeom=UsdGeom,
+        UsdShade=UsdShade,
+        Sdf=Sdf,
+        visual=visual,
+    )
+
+
+def _create_rectangular_wall_segments(
+    stage: Any,
+    path: str,
+    fixed_axis: str,
+    fixed_center: float,
+    u_min: float,
+    u_max: float,
+    z_min: float,
+    z_max: float,
+    hole_u0: float,
+    hole_u1: float,
+    hole_z0: float,
+    hole_z1: float,
+    thickness: float,
+    color: Vector3,
+    Gf: Any,
+    UsdGeom: Any,
+    UsdShade: Any | None = None,
+    Sdf: Any | None = None,
+    visual: dict[str, Any] | None = None,
+) -> None:
+    eps = 1e-6
+
+    if hole_u1 <= hole_u0 + eps or hole_z1 <= hole_z0 + eps:
+        # Degenerate cutout. Make a normal wall.
+        if fixed_axis == "x":
+            create_box(stage, path, (fixed_center, 0.5 * (u_min + u_max), 0.5 * (z_min + z_max)), (thickness, u_max - u_min, z_max - z_min), color, Gf, UsdGeom, UsdShade=UsdShade, Sdf=Sdf, visual=visual)
+        else:
+            create_box(stage, path, (0.5 * (u_min + u_max), fixed_center, 0.5 * (z_min + z_max)), (u_max - u_min, thickness, z_max - z_min), color, Gf, UsdGeom, UsdShade=UsdShade, Sdf=Sdf, visual=visual)
+        return
+
+    segments = [
+        ("U_Neg", u_min, hole_u0, z_min, z_max),
+        ("U_Pos", hole_u1, u_max, z_min, z_max),
+        ("Z_Neg", hole_u0, hole_u1, z_min, hole_z0),
+        ("Z_Pos", hole_u0, hole_u1, hole_z1, z_max),
+    ]
+
+    for suffix, seg_u0, seg_u1, seg_z0, seg_z1 in segments:
+        if seg_u1 <= seg_u0 + eps or seg_z1 <= seg_z0 + eps:
+            continue
+        u_center = 0.5 * (seg_u0 + seg_u1)
+        z_center = 0.5 * (seg_z0 + seg_z1)
+        u_size = seg_u1 - seg_u0
+        z_size = seg_z1 - seg_z0
+        if fixed_axis == "x":
+            position = (fixed_center, u_center, z_center)
+            size = (thickness, u_size, z_size)
+        else:
+            position = (u_center, fixed_center, z_center)
+            size = (u_size, thickness, z_size)
+        create_box(stage, f"{path}_{suffix}", position, size, color, Gf, UsdGeom, UsdShade=UsdShade, Sdf=Sdf, visual=visual)
+
+def build_obstacles(stage: Any, cfg: dict[str, Any], room: BoxRoom, Gf: Any, UsdGeom: Any, UsdShade: Any, Sdf: Any) -> None:
     for obstacle in cfg.get("obstacles", []):
         if not bool(obstacle.get("enabled", True)):
             continue
@@ -549,12 +826,23 @@ def build_obstacles(stage: Any, cfg: dict[str, Any], room: BoxRoom, Gf: Any, Usd
         size = tuple(float(v) for v in obstacle["size_m"])
         color = tuple(float(v) for v in obstacle["color"])
 
-        if kind == "box":
-            create_box(stage, path, position, size, color, Gf, UsdGeom)
+        visual = obstacle.get("visual", {})
+        if bool(obstacle.get("negative", False)):
+            if negative_obstacle_reaches_room_wall(cfg, obstacle):
+                print(f"Negative obstacle '{obstacle['name']}' applied as a generated room-wall cutout. No visible obstacle prim was created.")
+            else:
+                print(
+                    f"Negative obstacle '{obstacle['name']}' did not reach a room wall. "
+                    "No visible obstacle prim was created and no collision AABB was registered."
+                )
+            continue
+
+        if kind in {"box", "wall", "floor_patch"}:
+            create_box(stage, path, position, size, color, Gf, UsdGeom, UsdShade=UsdShade, Sdf=Sdf, visual=visual)
         elif kind == "sphere":
-            create_sphere(stage, path, position, size, color, Gf, UsdGeom)
-        elif kind == "cylinder":
-            create_cylinder(stage, path, position, size, color, Gf, UsdGeom)
+            create_sphere(stage, path, position, size, color, Gf, UsdGeom, UsdShade=UsdShade, Sdf=Sdf, visual=visual)
+        elif kind in {"cylinder", "pillar"}:
+            create_cylinder(stage, path, position, size, color, Gf, UsdGeom, UsdShade=UsdShade, Sdf=Sdf, visual=visual)
         else:
             raise ValueError(f"Unsupported obstacle kind: {kind}")
 
@@ -601,7 +889,18 @@ def build_landmark(stage: Any, cfg: dict[str, Any], Gf: Any, UsdLux: Any, UsdGeo
     )
 
 
-def create_box(stage: Any, path: str, position: Vector3, size: Vector3, color: Vector3, Gf: Any, UsdGeom: Any) -> None:
+def create_box(
+    stage: Any,
+    path: str,
+    position: Vector3,
+    size: Vector3,
+    color: Vector3,
+    Gf: Any,
+    UsdGeom: Any,
+    UsdShade: Any | None = None,
+    Sdf: Any | None = None,
+    visual: dict[str, Any] | None = None,
+) -> None:
     cube = UsdGeom.Cube.Define(stage, path)
     cube.CreateSizeAttr(1.0)
     prim = cube.GetPrim()
@@ -609,10 +908,21 @@ def create_box(stage: Any, path: str, position: Vector3, size: Vector3, color: V
     xform.ClearXformOpOrder()
     xform.AddTranslateOp().Set(Gf.Vec3d(*position))
     xform.AddScaleOp().Set(Gf.Vec3f(*size))
-    set_display_color(prim, color, Gf, UsdGeom)
+    set_visual(stage, prim, path, color, Gf, UsdGeom, UsdShade=UsdShade, Sdf=Sdf, visual=visual)
 
 
-def create_sphere(stage: Any, path: str, position: Vector3, size: Vector3, color: Vector3, Gf: Any, UsdGeom: Any) -> None:
+def create_sphere(
+    stage: Any,
+    path: str,
+    position: Vector3,
+    size: Vector3,
+    color: Vector3,
+    Gf: Any,
+    UsdGeom: Any,
+    UsdShade: Any | None = None,
+    Sdf: Any | None = None,
+    visual: dict[str, Any] | None = None,
+) -> None:
     sphere = UsdGeom.Sphere.Define(stage, path)
     sphere.CreateRadiusAttr(0.5)
     prim = sphere.GetPrim()
@@ -620,10 +930,21 @@ def create_sphere(stage: Any, path: str, position: Vector3, size: Vector3, color
     xform.ClearXformOpOrder()
     xform.AddTranslateOp().Set(Gf.Vec3d(*position))
     xform.AddScaleOp().Set(Gf.Vec3f(*size))
-    set_display_color(prim, color, Gf, UsdGeom)
+    set_visual(stage, prim, path, color, Gf, UsdGeom, UsdShade=UsdShade, Sdf=Sdf, visual=visual)
 
 
-def create_cylinder(stage: Any, path: str, position: Vector3, size: Vector3, color: Vector3, Gf: Any, UsdGeom: Any) -> None:
+def create_cylinder(
+    stage: Any,
+    path: str,
+    position: Vector3,
+    size: Vector3,
+    color: Vector3,
+    Gf: Any,
+    UsdGeom: Any,
+    UsdShade: Any | None = None,
+    Sdf: Any | None = None,
+    visual: dict[str, Any] | None = None,
+) -> None:
     cylinder = UsdGeom.Cylinder.Define(stage, path)
     cylinder.CreateRadiusAttr(0.5)
     cylinder.CreateHeightAttr(1.0)
@@ -632,13 +953,82 @@ def create_cylinder(stage: Any, path: str, position: Vector3, size: Vector3, col
     xform.ClearXformOpOrder()
     xform.AddTranslateOp().Set(Gf.Vec3d(*position))
     xform.AddScaleOp().Set(Gf.Vec3f(size[0], size[1], size[2]))
-    set_display_color(prim, color, Gf, UsdGeom)
+    set_visual(stage, prim, path, color, Gf, UsdGeom, UsdShade=UsdShade, Sdf=Sdf, visual=visual)
 
 
-def set_display_color(prim: Any, color: Vector3, Gf: Any, UsdGeom: Any) -> None:
+def create_cutout_marker(stage: Any, path: str, position: Vector3, size: Vector3, color: Vector3, Gf: Any, UsdGeom: Any) -> None:
+    marker_visual = {"opacity": 0.18, "roughness": 0.9, "metallic": 0.0, "reflectance": 0.0}
+    create_box(stage, path + "_CutoutMarker", position, size, color, Gf, UsdGeom, visual=marker_visual)
+
+
+def set_visual(
+    stage: Any,
+    prim: Any,
+    prim_path: str,
+    color: Vector3,
+    Gf: Any,
+    UsdGeom: Any,
+    UsdShade: Any | None = None,
+    Sdf: Any | None = None,
+    visual: dict[str, Any] | None = None,
+) -> None:
+    set_display_color(prim, color, Gf, UsdGeom, opacity=None if visual is None else visual.get("opacity"))
+    if UsdShade is None or Sdf is None:
+        return
+    bind_preview_surface_material(
+        stage=stage,
+        prim=prim,
+        prim_path=prim_path,
+        color=color,
+        visual=visual or {},
+        Gf=Gf,
+        UsdShade=UsdShade,
+        Sdf=Sdf,
+    )
+
+
+def set_display_color(prim: Any, color: Vector3, Gf: Any, UsdGeom: Any, opacity: Any = None) -> None:
     gprim = UsdGeom.Gprim(prim)
     if gprim:
         gprim.CreateDisplayColorAttr([Gf.Vec3f(*color)])
+        if opacity is not None:
+            gprim.CreateDisplayOpacityAttr([float(opacity)])
+
+
+def bind_preview_surface_material(
+    stage: Any,
+    prim: Any,
+    prim_path: str,
+    color: Vector3,
+    visual: dict[str, Any],
+    Gf: Any,
+    UsdShade: Any,
+    Sdf: Any,
+) -> None:
+    material_name = sanitize_prim_name(prim_path.replace("/", "_")) + "_Material"
+    material_path = f"/World/Materials/{material_name}"
+    shader_path = f"{material_path}/PreviewSurface"
+
+    opacity = clamp(float(visual.get("opacity", 1.0)), 0.0, 1.0)
+    roughness = clamp(float(visual.get("roughness", 0.55)), 0.0, 1.0)
+    metallic = clamp(float(visual.get("metallic", 0.0)), 0.0, 1.0)
+    reflectance = clamp(float(visual.get("reflectance", 0.35)), 0.0, 1.0)
+
+    try:
+        material = UsdShade.Material.Define(stage, material_path)
+        shader = UsdShade.Shader.Define(stage, shader_path)
+        shader.CreateIdAttr("UsdPreviewSurface")
+        shader.CreateInput("diffuseColor", Sdf.ValueTypeNames.Color3f).Set(Gf.Vec3f(*color))
+        shader.CreateInput("roughness", Sdf.ValueTypeNames.Float).Set(roughness)
+        shader.CreateInput("metallic", Sdf.ValueTypeNames.Float).Set(metallic)
+        shader.CreateInput("opacity", Sdf.ValueTypeNames.Float).Set(opacity)
+        shader.CreateInput("useSpecularWorkflow", Sdf.ValueTypeNames.Int).Set(1)
+        shader.CreateInput("specularColor", Sdf.ValueTypeNames.Color3f).Set(Gf.Vec3f(reflectance, reflectance, reflectance))
+        shader.CreateOutput("surface", Sdf.ValueTypeNames.Token)
+        material.CreateSurfaceOutput().ConnectToSource(shader.ConnectableAPI(), "surface")
+        UsdShade.MaterialBindingAPI(prim).Bind(material)
+    except Exception as exc:
+        print(f"WARNING: failed to bind preview material for {prim_path}: {exc}")
 
 
 def resolve_crazyflie_asset_path(
@@ -799,21 +1189,225 @@ def create_cameras(stage: Any, cfg: dict[str, Any], Gf: Any, UsdGeom: Any, set_c
     if bool(isometric.get("enabled", True)):
         camera = UsdGeom.Camera.Define(stage, str(isometric["prim_path"]))
         camera.CreateFocalLengthAttr(float(isometric["focal_length_mm"]))
-        xform = UsdGeom.Xformable(camera.GetPrim())
-        xform.ClearXformOpOrder()
-        xform.AddTranslateOp().Set(Gf.Vec3d(*[float(v) for v in isometric["position_m"]]))
+        camera.CreateHorizontalApertureAttr(float(isometric.get("horizontal_aperture_mm", 36.0)))
+        camera.CreateVerticalApertureAttr(float(isometric.get("vertical_aperture_mm", 20.25)))
+        camera.CreateClippingRangeAttr(Gf.Vec2f(0.03, 1000.0))
+
+        eye, target = compute_isometric_eye_and_target(cfg)
+        set_camera_look_at_transform(
+            camera_prim=camera.GetPrim(),
+            eye=eye,
+            target=target,
+            Gf=Gf,
+            UsdGeom=UsdGeom,
+        )
 
         if set_camera_view is not None:
             try:
                 set_camera_view(
-                    eye=[float(v) for v in isometric["position_m"]],
-                    target=[float(v) for v in isometric["look_at_m"]],
+                    eye=list(eye),
+                    target=list(target),
                     camera_prim_path=str(isometric["prim_path"]),
                 )
             except Exception as exc:
                 print(f"WARNING: set_camera_view failed for isometric camera: {exc}")
 
         print(f"Isometric camera prim created: {isometric['prim_path']}")
+        print(f"Isometric camera eye: ({eye[0]:+.3f}, {eye[1]:+.3f}, {eye[2]:+.3f})")
+        print(f"Isometric camera target: ({target[0]:+.3f}, {target[1]:+.3f}, {target[2]:+.3f})")
+
+
+def compute_isometric_eye_and_target(cfg: dict[str, Any]) -> tuple[Vector3, Vector3]:
+    """Return a robust isometric camera eye and target.
+
+    When auto_frame_room is true, the camera is placed from azimuth/elevation so the
+    full room is visible instead of relying on a hand-entered eye position that may
+    point nowhere useful. The distance formula is deliberately conservative.
+    """
+    isometric = cfg["cameras"]["isometric"]
+    room_cfg = cfg["room"]
+    room_size = [float(v) for v in room_cfg.get("size_m", [4.0, 3.0, 2.0])]
+
+    if not bool(isometric.get("auto_frame_room", True)):
+        eye = tuple(float(v) for v in isometric.get("position_m", [3.0, -3.0, 2.6]))
+        target = tuple(float(v) for v in isometric.get("look_at_m", [0.0, 0.0, 0.75]))
+        return eye, target
+
+    padding = max(float(isometric.get("padding_m", 0.35)), 0.0)
+    target = (
+        float(isometric.get("look_at_m", [0.0, 0.0, 0.5 * room_size[2]])[0]),
+        float(isometric.get("look_at_m", [0.0, 0.0, 0.5 * room_size[2]])[1]),
+        0.5 * room_size[2],
+    )
+    azimuth_rad = math.radians(float(isometric.get("azimuth_deg", -45.0)))
+    elevation_rad = math.radians(float(isometric.get("elevation_deg", 35.0)))
+    distance_scale = max(float(isometric.get("distance_scale", 1.85)), 0.01)
+
+    padded = [max(v + 2.0 * padding, 0.01) for v in room_size]
+    room_diagonal = math.sqrt(padded[0] * padded[0] + padded[1] * padded[1] + padded[2] * padded[2])
+    distance = distance_scale * room_diagonal
+
+    horizontal = math.cos(elevation_rad)
+    direction = (
+        horizontal * math.cos(azimuth_rad),
+        horizontal * math.sin(azimuth_rad),
+        math.sin(elevation_rad),
+    )
+    eye = (
+        target[0] + distance * direction[0],
+        target[1] + distance * direction[1],
+        target[2] + distance * direction[2],
+    )
+    return eye, target
+
+
+def set_camera_look_at_transform(camera_prim: Any, eye: Vector3, target: Vector3, Gf: Any, UsdGeom: Any) -> None:
+    """Orient a USD camera to look at a target.
+
+    USD cameras look along local -Z with +Y as the camera-up axis. Gf.SetLookAt
+    returns a view matrix, so the inverse is authored as the camera-to-world xform.
+    This is more reliable than raw Euler rotations for capture cameras.
+    """
+    eye_vec = Gf.Vec3d(float(eye[0]), float(eye[1]), float(eye[2]))
+    target_vec = Gf.Vec3d(float(target[0]), float(target[1]), float(target[2]))
+    direction = target_vec - eye_vec
+    if direction.GetLength() < 1e-9:
+        raise ValueError("Camera eye and target are identical; cannot build a look-at transform.")
+
+    up_vec = Gf.Vec3d(0.0, 0.0, 1.0)
+    direction_normalized = direction.GetNormalized()
+    if abs(Gf.Dot(direction_normalized, up_vec)) > 0.98:
+        up_vec = Gf.Vec3d(0.0, 1.0, 0.0)
+
+    view_matrix = Gf.Matrix4d().SetLookAt(eye_vec, target_vec, up_vec)
+    camera_to_world = view_matrix.GetInverse()
+
+    xform = UsdGeom.Xformable(camera_prim)
+    xform.ClearXformOpOrder()
+    xform.AddTransformOp().Set(camera_to_world)
+
+
+def create_camera_capture_session(
+    cfg: dict[str, Any],
+    output_root: Path,
+    scene_name: str,
+    carb: Any,
+) -> dict[str, Any] | None:
+    cameras_cfg = cfg.get("cameras", {})
+    requested: list[tuple[str, str, dict[str, Any]]] = []
+    for camera_key, output_folder in [("onboard", "camera_onboard"), ("isometric", "camera_isometric")]:
+        camera_cfg = cameras_cfg.get(camera_key, {})
+        if bool(camera_cfg.get("enabled", True)) and bool(camera_cfg.get("capture_rgb", False)):
+            requested.append((camera_key, output_folder, camera_cfg))
+
+    if not requested:
+        return None
+
+    import omni.replicator.core as rep
+
+    settings = carb.settings.get_settings()
+    settings.set("/omni/replicator/backends/disk/root_dir", str(output_root.resolve()))
+
+    capture_cfg = cameras_cfg.get("capture", {})
+    camera_params = bool(capture_cfg.get("camera_params", False))
+    rt_subframes = int(capture_cfg.get("rt_subframes", 1))
+    wait_for_render = bool(capture_cfg.get("wait_for_render", True))
+
+    render_products: list[Any] = []
+    writers: list[Any] = []
+    camera_metadata: list[dict[str, Any]] = []
+
+    for camera_key, output_folder, camera_cfg in requested:
+        prim_path = str(camera_cfg["prim_path"])
+        resolution = tuple(int(v) for v in camera_cfg.get("resolution", [640, 360]))
+        render_product = rep.create.render_product(
+            prim_path,
+            resolution,
+            name=f"{camera_key}_render_product",
+        )
+        writer = rep.WriterRegistry.get("BasicWriter")
+        writer.initialize(
+            output_dir=f"{scene_name}/{output_folder}",
+            rgb=True,
+            camera_params=camera_params,
+        )
+        writer.attach([render_product])
+        render_products.append(render_product)
+        writers.append(writer)
+        camera_metadata.append(
+            {
+                "camera_key": camera_key,
+                "prim_path": prim_path,
+                "output_folder": str((output_root / scene_name / output_folder).resolve()),
+                "resolution": list(resolution),
+            }
+        )
+
+    rep.orchestrator.set_capture_on_play(False)
+    metadata_path = output_root / scene_name / "camera_capture_metadata.json"
+    metadata_path.parent.mkdir(parents=True, exist_ok=True)
+    metadata_path.write_text(
+        json.dumps(
+            {
+                "scene_name": scene_name,
+                "rt_subframes": rt_subframes,
+                "wait_for_render": wait_for_render,
+                "camera_params": camera_params,
+                "cameras": camera_metadata,
+                "note": "Capture uses Replicator BasicWriter and existing USD camera prims.",
+            },
+            indent=2,
+        ),
+        encoding="utf-8",
+    )
+
+    print("=" * 100)
+    print("Crazyflie RGB camera capture enabled")
+    for item in camera_metadata:
+        print(f"{item['camera_key']}: {item['prim_path']} -> {item['output_folder']}")
+    print(f"RT subframes: {rt_subframes}")
+    print("=" * 100)
+
+    return {
+        "rep": rep,
+        "render_products": render_products,
+        "writers": writers,
+        "rt_subframes": rt_subframes,
+        "wait_for_render": wait_for_render,
+    }
+
+
+def step_camera_capture(session: dict[str, Any] | None, frame: int) -> None:
+    if session is None:
+        return
+    rep = session["rep"]
+    rep.orchestrator.step(
+        rt_subframes=int(session.get("rt_subframes", 1)),
+        pause_timeline=True,
+        delta_time=0.0,
+        wait_for_render=bool(session.get("wait_for_render", True)),
+    )
+
+
+def cleanup_camera_capture(session: dict[str, Any] | None) -> None:
+    if session is None:
+        return
+    rep = session.get("rep")
+    try:
+        if rep is not None:
+            rep.orchestrator.wait_until_complete()
+    except Exception as exc:
+        print(f"WARNING: rep.orchestrator.wait_until_complete failed: {exc}")
+    for writer in session.get("writers", []):
+        try:
+            writer.detach()
+        except Exception as exc:
+            print(f"WARNING: writer.detach failed: {exc}")
+    for render_product in session.get("render_products", []):
+        try:
+            render_product.destroy()
+        except Exception as exc:
+            print(f"WARNING: render_product.destroy failed: {exc}")
 
 
 def write_camera_capture_disabled_notes(output_root: Path, scene_name: str) -> None:

@@ -1,1 +1,0 @@
-RGB capture is intentionally disabled in Step 1. The camera prims are created, but capture should be enabled only after the base scene is stable.
