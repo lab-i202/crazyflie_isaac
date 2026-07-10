@@ -1,0 +1,15 @@
+{
+  "default_scenario_id": "crazyflie_room_basic",
+  "scenarios": [
+    {
+      "scenario_id": "crazyflie_room_basic",
+      "label": "Crazyflie / room scenario",
+      "default_profile": "profiles/crazyflie/crazyflie_room_basic.json"
+    },
+    {
+      "scenario_id": "tethered_glider_basic",
+      "label": "AWES / Bixler tethered glider - legacy",
+      "default_profile": "profiles/tethered_glider_basic.json"
+    }
+  ]
+}

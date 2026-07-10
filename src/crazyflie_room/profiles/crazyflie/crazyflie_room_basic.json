@@ -1,0 +1,207 @@
+{
+  "schema_version": 1,
+  "scenario_id": "crazyflie_room_basic",
+  "scene_name": "crazyflie_room_basic",
+  "app": {
+    "headless": false,
+    "renderer": "RealTimePathTracing",
+    "width": 1280,
+    "height": 720,
+    "anti_aliasing": 3,
+    "sync_loads": true
+  },
+  "room": {
+    "enabled": true,
+    "size_m": [
+      4.0,
+      3.0,
+      2.0
+    ],
+    "wall_thickness_m": 0.05,
+    "has_roof": false,
+    "floor_color": [
+      0.34901960784313724,
+      0.34901960784313724,
+      0.34901960784313724
+    ],
+    "wall_color": [
+      0.7490196078431373,
+      0.7803921568627451,
+      0.8196078431372549
+    ]
+  },
+  "obstacles": [
+    {
+      "name": "box_01",
+      "enabled": true,
+      "kind": "box",
+      "position_m": [
+        0.8,
+        0.4,
+        0.25
+      ],
+      "size_m": [
+        0.35,
+        0.35,
+        0.5
+      ],
+      "color": [
+        0.8,
+        0.25,
+        0.15
+      ],
+      "collision": true
+    },
+    {
+      "name": "box_02",
+      "enabled": true,
+      "kind": "box",
+      "position_m": [
+        -0.9,
+        -0.55,
+        0.2
+      ],
+      "size_m": [
+        0.3,
+        0.3,
+        0.4
+      ],
+      "color": [
+        0.2,
+        0.45,
+        0.9
+      ],
+      "collision": true
+    }
+  ],
+  "landmark": {
+    "enabled": true,
+    "kind": "sphere_light",
+    "position_m": [
+      1.8,
+      0.0,
+      1.2
+    ],
+    "radius_m": 0.08,
+    "color": [
+      1.0,
+      0.8509803921568627,
+      0.10196078431372549
+    ],
+    "intensity": 2500.0,
+    "exposure": 0.0
+  },
+  "crazyflie": {
+    "prim_path": "/World/CrazyflieRig",
+    "model_prim_path": "/World/CrazyflieRig/Crazyflie",
+    "asset": {
+      "mode": "isaac_builtin",
+      "local_usd_path": "assets/robots/crazyflie/cf2x.usd",
+      "candidates": [
+        "Isaac/Robots/Bitcraze/Crazyflie/cf2x.usd",
+        "Isaac/Bitcraze/Crazyflie/cf2x.usd",
+        "Bitcraze/Crazyflie/cf2x.usd",
+        "Isaac/Robots/Crazyflie/cf2x.usd",
+        "Isaac/IsaacLab/Robots/Bitcraze/Crazyflie/cf2x.usd",
+        "IsaacLab/Robots/Bitcraze/Crazyflie/cf2x.usd"
+      ],
+      "allow_placeholder_if_missing": false
+    },
+    "initial_pose": {
+      "position_m": [
+        -1.45,
+        -0.9,
+        0.7
+      ],
+      "rotation_deg": [
+        0.0,
+        0.0,
+        0.0
+      ]
+    },
+    "limits": {
+      "max_vx_m_s": 0.6,
+      "max_vy_m_s": 0.6,
+      "max_vz_m_s": 0.4,
+      "max_yaw_rate_deg_s": 90.0,
+      "collision_radius_m": 0.12
+    },
+    "propellers": {
+      "animate": true,
+      "prim_names": [
+        "m1_prop",
+        "m2_prop",
+        "m3_prop",
+        "m4_prop"
+      ],
+      "hover_spin_deg_s": 1800.0,
+      "command_gain_deg_s": 2200.0
+    }
+  },
+  "cameras": {
+    "onboard": {
+      "enabled": true,
+      "prim_path": "/World/CrazyflieRig/FrontCamera",
+      "position_m": [
+        0.08,
+        0.0,
+        0.03
+      ],
+      "rotation_deg": [
+        0.0,
+        -90.0,
+        0.0
+      ],
+      "focal_length_mm": 2.4,
+      "horizontal_aperture_mm": 3.2,
+      "vertical_aperture_mm": 2.4,
+      "clipping_range_m": [
+        0.03,
+        20.0
+      ],
+      "resolution": [
+        640,
+        360
+      ],
+      "capture_rgb": true
+    },
+    "isometric": {
+      "enabled": true,
+      "prim_path": "/World/IsometricCamera",
+      "position_m": [
+        3.0,
+        -3.0,
+        2.2
+      ],
+      "look_at_m": [
+        0.0,
+        0.0,
+        0.8
+      ],
+      "focal_length_mm": 35.0,
+      "resolution": [
+        1280,
+        720
+      ],
+      "capture_rgb": true
+    }
+  },
+  "runtime": {
+    "fps": 60.0,
+    "control_mode": "keyboard_terminal",
+    "duration_s": 0.0,
+    "telemetry_enabled": true,
+    "telemetry_output_root": "outputs",
+    "write_latest_state_json": true,
+    "write_state_history_csv": true,
+    "print_every_s": 0.25,
+    "csv_every_s": 0.05,
+    "save_usd_path": ""
+  },
+  "future_rl": {
+    "enabled": false,
+    "num_envs": 1,
+    "spacing_m": 5.0,
+    "note": "Reserved. Do not use until the single-Crazyflie scene is stable."
+  }
+}

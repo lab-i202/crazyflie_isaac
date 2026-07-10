@@ -1,9 +1,9 @@
 version: 2026-07-08_replicator_rgb_last_frame_v2_prop_safe
-time: 2026-07-08 17:59:19
+time: 2026-07-09 16:28:04
 camera_path: /World/CrazyflieRig/FrontCamera
 resolution: 640x480
-last_frame_path: C:\Users\Admin\Documents\Python\isaac_sim_test\crazyflie_isaac_sim\front_camera_recs\last_frame.png
-capture_counter: 2310
+last_frame_path: C:\Users\Admin\Documents\Github\crazyflie_isaac\src\front_camera_recs\last_frame.png
+capture_counter: 827
 error_counter: 0
 hide_propellers_during_capture: True
 status: OK - last_frame.png overwritten successfully.

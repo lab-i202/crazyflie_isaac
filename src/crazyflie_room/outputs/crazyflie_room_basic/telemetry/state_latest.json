@@ -1,0 +1,26 @@
+{
+  "scene_name": "crazyflie_room_basic",
+  "frame": 2411,
+  "time_s": 41.0694036000059,
+  "pose": {
+    "position_m": [
+      -1.45,
+      -0.9,
+      0.7
+    ],
+    "rotation_deg": [
+      0.0,
+      0.0,
+      0.0
+    ]
+  },
+  "command": {
+    "label": "hover",
+    "vx_m_s": 0.0,
+    "vy_m_s": 0.0,
+    "vz_m_s": 0.0,
+    "yaw_rate_deg_s": 0.0
+  },
+  "control_mode": "keyboard_terminal",
+  "crazyflie_asset_path": "https://omniverse-content-production.s3-us-west-2.amazonaws.com/Assets/Isaac/5.1/Isaac/Robots/Bitcraze/Crazyflie/cf2x.usd"
+}
