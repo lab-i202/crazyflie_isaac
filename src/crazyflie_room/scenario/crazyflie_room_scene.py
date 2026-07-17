@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import json
 import math
+import shutil
 import sys
 import time
 from dataclasses import dataclass
@@ -153,6 +154,9 @@ class TerminalKeyboardController:
         self.max_yaw_rate = float(limits["max_yaw_rate_deg_s"])
         self.exit_requested = False
         self._last_keys: list[str] = []
+        self._held_command = VelocityCommand(0.0, 0.0, 0.0, 0.0, "hover")
+        self._held_until = 0.0
+        self.command_hold_s = max(float(cfg.get("runtime", {}).get("keyboard_command_hold_s", 0.20)), 0.0)
 
     def get_command(self) -> VelocityCommand:
         if self.msvcrt is None:
@@ -160,6 +164,9 @@ class TerminalKeyboardController:
 
         keys = self._read_available_keys()
         self._last_keys = keys
+
+        if not keys and self.command_hold_s > 0.0 and time.perf_counter() < self._held_until:
+            return self._held_command
 
         vx = 0.0
         vy = 0.0
@@ -202,13 +209,17 @@ class TerminalKeyboardController:
         if not labels:
             labels = ["hover"]
 
-        return VelocityCommand(
+        command = VelocityCommand(
             vx_m_s=clamp(vx, -self.max_vx, self.max_vx),
             vy_m_s=clamp(vy, -self.max_vy, self.max_vy),
             vz_m_s=clamp(vz, -self.max_vz, self.max_vz),
             yaw_rate_deg_s=clamp(yaw, -self.max_yaw_rate, self.max_yaw_rate),
             label="+".join(labels),
         )
+        if command.label != "hover" and self.command_hold_s > 0.0:
+            self._held_command = command
+            self._held_until = time.perf_counter() + self.command_hold_s
+        return command
 
     def _read_available_keys(self) -> list[str]:
         assert self.msvcrt is not None
@@ -242,12 +253,45 @@ class TerminalKeyboardController:
 
 
 class ScriptedController:
-    def __init__(self, mode: str) -> None:
+    def __init__(self, mode: str, cfg: dict[str, Any]) -> None:
         self.mode = mode
+        self.cfg = cfg
         self.exit_requested = False
+        self.start_time = time.perf_counter()
+        limits = cfg["crazyflie"]["limits"]
+        self.max_vx = float(limits["max_vx_m_s"])
+        self.max_vy = float(limits["max_vy_m_s"])
+        self.max_vz = float(limits["max_vz_m_s"])
 
     def get_command(self) -> VelocityCommand:
+        if self.mode == "static":
+            return VelocityCommand(0.0, 0.0, 0.0, 0.0, "static")
+        if self.mode == "scripted_loop":
+            return self._scripted_loop_command()
         return VelocityCommand(0.0, 0.0, 0.0, 0.0, self.mode)
+
+    def _scripted_loop_command(self) -> VelocityCommand:
+        loop_cfg = self.cfg.get("runtime", {}).get("scripted_loop", {})
+        segment_s = max(float(loop_cfg.get("segment_s", 1.5)), 1e-6)
+        hover_s = max(float(loop_cfg.get("hover_s", 0.5)), 0.0)
+        phases = [
+            ("forward", self.max_vx, 0.0, 0.0),
+            ("backward", -self.max_vx, 0.0, 0.0),
+            ("left", 0.0, self.max_vy, 0.0),
+            ("right", 0.0, -self.max_vy, 0.0),
+            ("up", 0.0, 0.0, self.max_vz),
+            ("down", 0.0, 0.0, -self.max_vz),
+        ]
+        phase_period = segment_s + hover_s
+        cycle_s = len(phases) * phase_period
+        elapsed = time.perf_counter() - self.start_time
+        t = elapsed % cycle_s
+        phase_index = int(t // phase_period)
+        phase_t = t - phase_index * phase_period
+        label, vx, vy, vz = phases[phase_index]
+        if phase_t >= segment_s:
+            return VelocityCommand(0.0, 0.0, 0.0, 0.0, f"hover_after_{label}")
+        return VelocityCommand(vx, vy, vz, 0.0, f"scripted_{label}")
 
 
 def run_crazyflie_room_scene(
@@ -302,6 +346,7 @@ def run_crazyflie_room_scene(
         UsdGeom.Xform.Define(stage, "/World")
         UsdGeom.Xform.Define(stage, "/World/Room")
         UsdGeom.Xform.Define(stage, "/World/Obstacles")
+        UsdGeom.Xform.Define(stage, "/World/CustomAssets")
         UsdGeom.Xform.Define(stage, "/World/Landmark")
         UsdGeom.Xform.Define(stage, "/World/Materials")
 
@@ -319,6 +364,7 @@ def run_crazyflie_room_scene(
         room = BoxRoom(scene_config)
         build_room(stage, scene_config, room, Gf, UsdGeom, UsdShade, Sdf)
         build_obstacles(stage, scene_config, room, Gf, UsdGeom, UsdShade, Sdf)
+        build_custom_assets(stage, scene_config, project_root, stage_utils, Gf, UsdGeom)
         build_landmark(stage, scene_config, Gf, UsdLux, UsdGeom)
 
         crazyflie_cfg = scene_config["crazyflie"]
@@ -387,6 +433,7 @@ def run_crazyflie_room_scene(
                 "scene_name": scene_name,
                 "profile_path": str(profile_path) if profile_path else "",
                 "crazyflie_asset_path": asset_path,
+                "custom_asset_count": len([a for a in scene_config.get("custom_assets", []) if a.get("enabled", False)]),
                 "telemetry_output_dir": str(telemetry.output_dir),
                 "camera_capture": "enabled" if camera_capture_session is not None else "disabled",
                 "control_mode": scene_config["runtime"].get("control_mode"),
@@ -397,7 +444,7 @@ def run_crazyflie_room_scene(
         if control_mode == "keyboard_terminal":
             controller: Any = TerminalKeyboardController(scene_config)
         else:
-            controller = ScriptedController(control_mode)
+            controller = ScriptedController(control_mode, scene_config)
 
         fps = float(scene_config["runtime"].get("fps", 60.0))
         dt = 1.0 / fps
@@ -545,7 +592,9 @@ def build_room(stage: Any, cfg: dict[str, Any], room: BoxRoom, Gf: Any, UsdGeom:
         Sdf=Sdf,
         visual=floor_visual,
     )
-    cutouts = collect_wall_cutouts(cfg, sx=sx, sy=sy, sz=sz)
+    # Step 5 intentionally stops using negative obstacles for wall CSG/cutout work.
+    # Use Custom assets for designed wall geometry instead.
+    cutouts = {"x_pos": [], "x_neg": [], "y_pos": [], "y_neg": []}
     create_x_wall_with_cutout(stage, "/World/Room/Wall_X_Pos", 0.5 * sx + 0.5 * t, sy, sz, t, wall_color, cutouts["x_pos"], Gf, UsdGeom, UsdShade, Sdf, wall_visual)
     create_x_wall_with_cutout(stage, "/World/Room/Wall_X_Neg", -0.5 * sx - 0.5 * t, sy, sz, t, wall_color, cutouts["x_neg"], Gf, UsdGeom, UsdShade, Sdf, wall_visual)
     create_y_wall_with_cutout(stage, "/World/Room/Wall_Y_Pos", 0.5 * sy + 0.5 * t, sx, sz, t, wall_color, cutouts["y_pos"], Gf, UsdGeom, UsdShade, Sdf, wall_visual)
@@ -855,6 +904,55 @@ def build_obstacles(stage: Any, cfg: dict[str, Any], room: BoxRoom, Gf: Any, Usd
                     bmax=(position[0] + half[0], position[1] + half[1], position[2] + half[2]),
                 )
             )
+
+
+
+def build_custom_assets(stage: Any, cfg: dict[str, Any], project_root: Path, stage_utils: Any, Gf: Any, UsdGeom: Any) -> None:
+    """Reference user-provided USD assets from the local assets/ tree.
+
+    This intentionally does not do boolean operations and does not auto-generate
+    physics collision for arbitrary imported geometry. The asset authoring tool
+    should own the detailed geometry. The scenario profile owns placement.
+    """
+    for index, asset in enumerate(cfg.get("custom_assets", [])):
+        if not bool(asset.get("enabled", False)):
+            continue
+        usd_value = str(asset.get("usd_path", "")).strip()
+        if not usd_value:
+            print(f"WARNING: custom asset {index} is enabled but usd_path is empty; skipping.")
+            continue
+        usd_path = resolve_project_path(project_root, usd_value)
+        if not usd_path.exists() or not usd_path.is_file():
+            raise FileNotFoundError(
+                "Custom USD asset is enabled but the file does not exist.\n"
+                f"Asset name: {asset.get('name', index)}\n"
+                f"Expected file: {usd_path}"
+            )
+        prim_path = str(asset.get("prim_path", f"/World/CustomAssets/Asset_{index + 1:02d}")).strip()
+        if not prim_path.startswith("/"):
+            prim_path = f"/World/CustomAssets/{sanitize_prim_name(prim_path)}"
+        root_xform = UsdGeom.Xform.Define(stage, prim_path)
+        xform = UsdGeom.Xformable(root_xform.GetPrim())
+        xform.ClearXformOpOrder()
+        pos = [float(v) for v in asset.get("position_m", [0.0, 0.0, 0.0])]
+        rot = [float(v) for v in asset.get("rotation_deg", [0.0, 0.0, 0.0])]
+        scale = [float(v) for v in asset.get("scale", [1.0, 1.0, 1.0])]
+        xform.AddTranslateOp().Set(Gf.Vec3d(pos[0], pos[1], pos[2]))
+        xform.AddRotateXYZOp().Set(Gf.Vec3f(rot[0], rot[1], rot[2]))
+        xform.AddScaleOp().Set(Gf.Vec3f(scale[0], scale[1], scale[2]))
+        reference_path = f"{prim_path}/ReferencedUSD"
+        add_reference_to_stage_compatible(
+            stage_utils=stage_utils,
+            usd_path=str(usd_path),
+            prim_path=reference_path,
+        )
+        if bool(asset.get("collision", False)):
+            print(
+                f"WARNING: custom asset '{asset.get('name', index)}' requested collision, "
+                "but Step 5 does not auto-generate collision meshes for arbitrary imported USD files. "
+                "Author collision in the USD asset or add this in a later dedicated physics step."
+            )
+        print(f"Custom asset loaded: {asset.get('name', index)} -> {usd_path} at {prim_path}")
 
 
 def build_landmark(stage: Any, cfg: dict[str, Any], Gf: Any, UsdLux: Any, UsdGeom: Any) -> None:
@@ -1293,12 +1391,28 @@ def create_camera_capture_session(
     scene_name: str,
     carb: Any,
 ) -> dict[str, Any] | None:
+    """Create a Replicator capture session.
+
+    Two modes are supported per camera:
+      1. archive_rgb=True: keep rgb_0000.png, rgb_0001.png, ... and also update last_frame.png.
+      2. archive_rgb=False with save_last_frame_png=True: write temporary RGB files internally, copy the newest
+         frame to camera_*/last_frame.png, then delete the temporary RGB files. This gives a live preview frame
+         without filling the output folder during long unattended runs.
+    """
     cameras_cfg = cfg.get("cameras", {})
-    requested: list[tuple[str, str, dict[str, Any]]] = []
+    capture_cfg = cameras_cfg.get("capture", {})
+    save_last_frame_png = bool(capture_cfg.get("save_last_frame_png", True))
+
+    requested: list[tuple[str, str, dict[str, Any], bool, bool]] = []
     for camera_key, output_folder in [("onboard", "camera_onboard"), ("isometric", "camera_isometric")]:
         camera_cfg = cameras_cfg.get(camera_key, {})
-        if bool(camera_cfg.get("enabled", True)) and bool(camera_cfg.get("capture_rgb", False)):
-            requested.append((camera_key, output_folder, camera_cfg))
+        enabled = bool(camera_cfg.get("enabled", True))
+        archive_rgb = bool(camera_cfg.get("capture_rgb", False))
+        # Important: last_frame.png is a live-preview mode, not merely a copy of archived RGB frames.
+        # Therefore it must run even when archive_rgb is disabled.
+        last_frame_only = bool(save_last_frame_png and not archive_rgb)
+        if enabled and (archive_rgb or save_last_frame_png):
+            requested.append((camera_key, output_folder, camera_cfg, archive_rgb, last_frame_only))
 
     if not requested:
         return None
@@ -1308,7 +1422,6 @@ def create_camera_capture_session(
     settings = carb.settings.get_settings()
     settings.set("/omni/replicator/backends/disk/root_dir", str(output_root.resolve()))
 
-    capture_cfg = cameras_cfg.get("capture", {})
     camera_params = bool(capture_cfg.get("camera_params", False))
     rt_subframes = int(capture_cfg.get("rt_subframes", 1))
     wait_for_render = bool(capture_cfg.get("wait_for_render", True))
@@ -1316,10 +1429,25 @@ def create_camera_capture_session(
     render_products: list[Any] = []
     writers: list[Any] = []
     camera_metadata: list[dict[str, Any]] = []
+    temp_capture_root = output_root / scene_name / ".last_frame_tmp"
 
-    for camera_key, output_folder, camera_cfg in requested:
+    for camera_key, output_folder, camera_cfg, archive_rgb, last_frame_only in requested:
         prim_path = str(camera_cfg["prim_path"])
         resolution = tuple(int(v) for v in camera_cfg.get("resolution", [640, 360]))
+
+        final_folder = output_root / scene_name / output_folder
+        final_folder.mkdir(parents=True, exist_ok=True)
+
+        if archive_rgb:
+            writer_output_dir = f"{scene_name}/{output_folder}"
+            writer_folder = final_folder
+        else:
+            # Replicator BasicWriter writes numbered files. For last-frame-only mode, isolate those files
+            # in a hidden temporary folder so the user-facing camera folder only contains last_frame.png.
+            writer_output_dir = f"{scene_name}/.last_frame_tmp/{camera_key}"
+            writer_folder = temp_capture_root / camera_key
+            writer_folder.mkdir(parents=True, exist_ok=True)
+
         render_product = rep.create.render_product(
             prim_path,
             resolution,
@@ -1327,9 +1455,9 @@ def create_camera_capture_session(
         )
         writer = rep.WriterRegistry.get("BasicWriter")
         writer.initialize(
-            output_dir=f"{scene_name}/{output_folder}",
+            output_dir=writer_output_dir,
             rgb=True,
-            camera_params=camera_params,
+            camera_params=(camera_params if archive_rgb else False),
         )
         writer.attach([render_product])
         render_products.append(render_product)
@@ -1338,8 +1466,11 @@ def create_camera_capture_session(
             {
                 "camera_key": camera_key,
                 "prim_path": prim_path,
-                "output_folder": str((output_root / scene_name / output_folder).resolve()),
+                "output_folder": str(final_folder.resolve()),
+                "writer_folder": str(writer_folder.resolve()),
                 "resolution": list(resolution),
+                "archive_rgb": archive_rgb,
+                "last_frame_only": last_frame_only,
             }
         )
 
@@ -1353,8 +1484,14 @@ def create_camera_capture_session(
                 "rt_subframes": rt_subframes,
                 "wait_for_render": wait_for_render,
                 "camera_params": camera_params,
+                "save_last_frame_png": save_last_frame_png,
+                "temp_capture_root": str(temp_capture_root.resolve()),
                 "cameras": camera_metadata,
-                "note": "Capture uses Replicator BasicWriter and existing USD camera prims.",
+                "note": (
+                    "Capture uses Replicator BasicWriter. If archive_rgb is false and save_last_frame_png "
+                    "is true, numbered RGB files are written only to a hidden temporary folder and deleted "
+                    "after last_frame.png is refreshed."
+                ),
             },
             indent=2,
         ),
@@ -1362,9 +1499,10 @@ def create_camera_capture_session(
     )
 
     print("=" * 100)
-    print("Crazyflie RGB camera capture enabled")
+    print("Crazyflie camera capture enabled")
     for item in camera_metadata:
-        print(f"{item['camera_key']}: {item['prim_path']} -> {item['output_folder']}")
+        mode = "archive rgb_* + last_frame.png" if item["archive_rgb"] else "last_frame.png only"
+        print(f"{item['camera_key']}: {item['prim_path']} -> {item['output_folder']} ({mode})")
     print(f"RT subframes: {rt_subframes}")
     print("=" * 100)
 
@@ -1374,6 +1512,9 @@ def create_camera_capture_session(
         "writers": writers,
         "rt_subframes": rt_subframes,
         "wait_for_render": wait_for_render,
+        "save_last_frame_png": save_last_frame_png,
+        "camera_metadata": camera_metadata,
+        "last_frame_seen": {},
     }
 
 
@@ -1387,6 +1528,44 @@ def step_camera_capture(session: dict[str, Any] | None, frame: int) -> None:
         delta_time=0.0,
         wait_for_render=bool(session.get("wait_for_render", True)),
     )
+    if bool(session.get("save_last_frame_png", True)):
+        update_last_frame_pngs(session)
+
+
+
+def update_last_frame_pngs(session: dict[str, Any]) -> None:
+    metadata = session.get("camera_metadata", [])
+    seen = session.setdefault("last_frame_seen", {})
+    for item in metadata:
+        output_folder = Path(item["output_folder"])
+        writer_folder = Path(item.get("writer_folder", item["output_folder"]))
+        if not writer_folder.exists():
+            continue
+        files = sorted(
+            [path for path in writer_folder.glob("rgb_*.png") if path.is_file()],
+            key=lambda p: (p.stat().st_mtime_ns, p.name),
+        )
+        if not files:
+            continue
+        latest = files[-1]
+        key = str(writer_folder)
+        if seen.get(key) != latest.name:
+            output_folder.mkdir(parents=True, exist_ok=True)
+            target = output_folder / "last_frame.png"
+            try:
+                shutil.copy2(latest, target)
+                seen[key] = latest.name
+            except Exception as exc:
+                print(f"WARNING: failed to update {target}: {exc}")
+
+        if bool(item.get("last_frame_only", False)):
+            # Keep disk usage bounded during long runs. Do not expose numbered RGB files when the user only
+            # asked for last_frame.png.
+            for path in files:
+                try:
+                    path.unlink()
+                except Exception as exc:
+                    print(f"WARNING: failed to delete temporary frame {path}: {exc}")
 
 
 def cleanup_camera_capture(session: dict[str, Any] | None) -> None:
@@ -1398,6 +1577,12 @@ def cleanup_camera_capture(session: dict[str, Any] | None) -> None:
             rep.orchestrator.wait_until_complete()
     except Exception as exc:
         print(f"WARNING: rep.orchestrator.wait_until_complete failed: {exc}")
+    # One final last_frame refresh catches the final frame written by wait_until_complete().
+    try:
+        if bool(session.get("save_last_frame_png", True)):
+            update_last_frame_pngs(session)
+    except Exception as exc:
+        print(f"WARNING: final last_frame update failed: {exc}")
     for writer in session.get("writers", []):
         try:
             writer.detach()

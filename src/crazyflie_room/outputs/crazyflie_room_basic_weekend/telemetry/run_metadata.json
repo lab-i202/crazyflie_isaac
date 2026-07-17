@@ -1,11 +1,11 @@
 {
   "scenario_id": "crazyflie_room_basic",
-  "scene_name": "crazyflie_room_basic",
+  "scene_name": "crazyflie_room_basic_weekend",
   "profile_path": "C:\\Users\\Admin\\Documents\\Github\\crazyflie_isaac\\src\\crazyflie_room\\profiles\\crazyflie\\crazyflie_room_basic.json",
   "crazyflie_asset_path": "https://omniverse-content-production.s3-us-west-2.amazonaws.com/Assets/Isaac/5.1/Isaac/Robots/Bitcraze/Crazyflie/cf2x.usd",
   "custom_asset_count": 0,
-  "telemetry_output_dir": "C:\\Users\\Admin\\Documents\\Github\\crazyflie_isaac\\src\\crazyflie_room\\outputs\\crazyflie_room_basic\\telemetry",
+  "telemetry_output_dir": "C:\\Users\\Admin\\Documents\\Github\\crazyflie_isaac\\src\\crazyflie_room\\outputs\\crazyflie_room_basic_weekend\\telemetry",
   "camera_capture": "enabled",
   "control_mode": "scripted_loop",
-  "created_at_utc": "2026-07-10T16:51:54.866665+00:00"
+  "created_at_utc": "2026-07-10T16:53:42.042133+00:00"
 }

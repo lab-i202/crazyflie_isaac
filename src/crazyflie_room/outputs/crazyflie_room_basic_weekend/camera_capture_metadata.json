@@ -1,0 +1,35 @@
+{
+  "scene_name": "crazyflie_room_basic_weekend",
+  "rt_subframes": 1,
+  "wait_for_render": true,
+  "camera_params": false,
+  "save_last_frame_png": true,
+  "temp_capture_root": "C:\\Users\\Admin\\Documents\\Github\\crazyflie_isaac\\src\\crazyflie_room\\outputs\\crazyflie_room_basic_weekend\\.last_frame_tmp",
+  "cameras": [
+    {
+      "camera_key": "onboard",
+      "prim_path": "/World/CrazyflieRig/FrontCamera",
+      "output_folder": "C:\\Users\\Admin\\Documents\\Github\\crazyflie_isaac\\src\\crazyflie_room\\outputs\\crazyflie_room_basic_weekend\\camera_onboard",
+      "writer_folder": "C:\\Users\\Admin\\Documents\\Github\\crazyflie_isaac\\src\\crazyflie_room\\outputs\\crazyflie_room_basic_weekend\\.last_frame_tmp\\onboard",
+      "resolution": [
+        640,
+        360
+      ],
+      "archive_rgb": false,
+      "last_frame_only": true
+    },
+    {
+      "camera_key": "isometric",
+      "prim_path": "/World/IsometricCamera",
+      "output_folder": "C:\\Users\\Admin\\Documents\\Github\\crazyflie_isaac\\src\\crazyflie_room\\outputs\\crazyflie_room_basic_weekend\\camera_isometric",
+      "writer_folder": "C:\\Users\\Admin\\Documents\\Github\\crazyflie_isaac\\src\\crazyflie_room\\outputs\\crazyflie_room_basic_weekend\\.last_frame_tmp\\isometric",
+      "resolution": [
+        1280,
+        720
+      ],
+      "archive_rgb": false,
+      "last_frame_only": true
+    }
+  ],
+  "note": "Capture uses Replicator BasicWriter. If archive_rgb is false and save_last_frame_png is true, numbered RGB files are written only to a hidden temporary folder and deleted after last_frame.png is refreshed."
+}

@@ -20,9 +20,9 @@
     "wall_thickness_m": 0.05,
     "has_roof": false,
     "floor_color": [
-      0.28627450980392155,
-      0.44313725490196076,
-      0.25882352941176473
+      0.34901960784313724,
+      0.34901960784313724,
+      0.34901960784313724
     ],
     "wall_color": [
       0.7490196078431373,
@@ -100,97 +100,37 @@
         "metallic": 0.0,
         "reflectance": 0.35
       }
-    },
+    }
+  ],
+  "custom_assets": [
     {
-      "name": "wall_03",
-      "enabled": true,
-      "kind": "wall",
+      "name": "custom_asset_01",
+      "enabled": false,
+      "usd_path": "",
+      "prim_path": "/World/CustomAssets/custom_asset_01",
       "position_m": [
         0.0,
         0.0,
-        0.5
+        0.0
       ],
-      "size_m": [
-        0.08,
+      "rotation_deg": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "scale": [
+        1.0,
         1.0,
         1.0
       ],
-      "color": [
-        0.65,
-        0.65,
-        0.7
-      ],
-      "collision": true,
-      "negative": false,
-      "visual": {
-        "opacity": 1.0,
-        "roughness": 0.55,
-        "metallic": 0.0,
-        "reflectance": 0.45
-      }
-    },
-    {
-      "name": "box_04",
-      "enabled": true,
-      "kind": "cylinder",
-      "position_m": [
-        0.0,
-        0.0,
-        0.25
-      ],
-      "size_m": [
-        0.3,
-        0.3,
-        2.0
-      ],
-      "color": [
-        0.8,
-        0.25098039215686274,
-        0.14901960784313725
-      ],
-      "collision": true,
-      "negative": true,
-      "visual": {
-        "opacity": 1.0,
-        "roughness": 0.55,
-        "metallic": 0.0,
-        "reflectance": 0.35
-      }
-    },
-    {
-      "name": "box_05",
-      "enabled": true,
-      "kind": "cylinder",
-      "position_m": [
-        -0.7564102564102564,
-        0.28205128205128216,
-        0.25
-      ],
-      "size_m": [
-        0.3,
-        0.3,
-        0.5
-      ],
-      "color": [
-        0.8,
-        0.25098039215686274,
-        0.14901960784313725
-      ],
-      "collision": true,
-      "negative": false,
-      "visual": {
-        "opacity": 1.0,
-        "roughness": 0.55,
-        "metallic": 0.0,
-        "reflectance": 0.35
-      }
+      "collision": false
     }
   ],
   "landmark": {
     "enabled": true,
     "kind": "sphere_light",
     "position_m": [
-      2.0,
+      1.8,
       0.0,
       1.2
     ],
@@ -275,7 +215,7 @@
         640,
         360
       ],
-      "capture_rgb": true,
+      "capture_rgb": false,
       "capture_every_n_frames": 1
     },
     "isometric": {
@@ -301,18 +241,26 @@
         1280,
         720
       ],
-      "capture_rgb": true,
+      "capture_rgb": false,
       "capture_every_n_frames": 1
     },
     "capture": {
       "rt_subframes": 1,
       "camera_params": false,
-      "wait_for_render": true
+      "wait_for_render": true,
+      "save_last_frame_png": true
     }
   },
   "runtime": {
     "fps": 60.0,
-    "control_mode": "keyboard_terminal",
+    "control_mode": "scripted_loop",
+    "keyboard_command_hold_s": 0.2,
+    "scripted_loop": {
+      "enabled": true,
+      "segment_s": 1.5,
+      "hover_s": 0.5,
+      "repeat": true
+    },
     "duration_s": 0.0,
     "telemetry_enabled": true,
     "telemetry_output_root": "outputs",

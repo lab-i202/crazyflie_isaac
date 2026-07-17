@@ -65,6 +65,18 @@ DEFAULT_CRAZYFLIE_ROOM_PROFILE: dict[str, Any] = {
             },
         }
     ],
+    "custom_assets": [
+        {
+            "name": "custom_asset_01",
+            "enabled": False,
+            "usd_path": "",
+            "prim_path": "/World/CustomAssets/custom_asset_01",
+            "position_m": [0.0, 0.0, 0.0],
+            "rotation_deg": [0.0, 0.0, 0.0],
+            "scale": [1.0, 1.0, 1.0],
+            "collision": False,
+        }
+    ],
     "landmark": {
         "enabled": True,
         "kind": "sphere_light",
@@ -140,12 +152,20 @@ DEFAULT_CRAZYFLIE_ROOM_PROFILE: dict[str, Any] = {
         "capture": {
             "rt_subframes": 1,
             "camera_params": False,
-            "wait_for_render": True
+            "wait_for_render": True,
+            "save_last_frame_png": True
         },
     },
     "runtime": {
         "fps": 60.0,
         "control_mode": "keyboard_terminal",
+        "keyboard_command_hold_s": 0.20,
+        "scripted_loop": {
+            "enabled": False,
+            "segment_s": 1.5,
+            "hover_s": 0.5,
+            "repeat": True
+        },
         "duration_s": 0.0,
         "telemetry_enabled": True,
         "telemetry_output_root": "outputs",
@@ -163,7 +183,7 @@ DEFAULT_CRAZYFLIE_ROOM_PROFILE: dict[str, Any] = {
     },
 }
 
-CONTROL_MODES = ["keyboard_terminal", "scripted_hover", "static"]
+CONTROL_MODES = ["keyboard_terminal", "scripted_loop", "scripted_hover", "static"]
 OBSTACLE_KINDS = ["box", "wall", "sphere", "cylinder", "pillar", "floor_patch"]
 ASSET_MODES = ["isaac_builtin", "local_usd"]
 
@@ -230,6 +250,27 @@ def normalize_crazyflie_room_profile(profile: dict[str, Any]) -> None:
         normalized_obstacles.append(default_obstacle)
     profile["obstacles"] = normalized_obstacles
 
+
+    # Normalize user-imported custom USD assets.
+    normalized_custom_assets = []
+    for index, asset in enumerate(profile.get("custom_assets", [])):
+        default_asset = {
+            "name": f"custom_asset_{index + 1:02d}",
+            "enabled": False,
+            "usd_path": "",
+            "prim_path": f"/World/CustomAssets/custom_asset_{index + 1:02d}",
+            "position_m": [0.0, 0.0, 0.0],
+            "rotation_deg": [0.0, 0.0, 0.0],
+            "scale": [1.0, 1.0, 1.0],
+            "collision": False,
+        }
+        if isinstance(asset, dict):
+            _deep_update(default_asset, asset)
+        if not str(default_asset.get("prim_path", "")).startswith("/"):
+            default_asset["prim_path"] = f"/World/CustomAssets/{sanitize_prim_token(str(default_asset.get('name', 'asset')))}"
+        normalized_custom_assets.append(default_asset)
+    profile["custom_assets"] = normalized_custom_assets
+
     room = profile.setdefault("room", {})
     visual = room.setdefault("visual", {})
     visual.setdefault("floor", {})
@@ -242,7 +283,8 @@ def normalize_crazyflie_room_profile(profile: dict[str, Any]) -> None:
             visual[key].setdefault(field, value)
 
     cameras = profile.setdefault("cameras", {})
-    cameras.setdefault("capture", {"rt_subframes": 1, "camera_params": False, "wait_for_render": True})
+    cameras.setdefault("capture", {"rt_subframes": 1, "camera_params": False, "wait_for_render": True, "save_last_frame_png": True})
+    cameras["capture"].setdefault("save_last_frame_png", True)
     for camera_key in ["onboard", "isometric"]:
         if camera_key in cameras and isinstance(cameras[camera_key], dict):
             cameras[camera_key].setdefault("capture_every_n_frames", 1)
@@ -254,6 +296,21 @@ def normalize_crazyflie_room_profile(profile: dict[str, Any]) -> None:
         isometric.setdefault("elevation_deg", 35.0)
         isometric.setdefault("distance_scale", 1.85)
         isometric.setdefault("padding_m", 0.35)
+
+    runtime = profile.setdefault("runtime", {})
+    runtime.setdefault("keyboard_command_hold_s", 0.20)
+    runtime.setdefault("scripted_loop", {"enabled": False, "segment_s": 1.5, "hover_s": 0.5, "repeat": True})
+    runtime.setdefault("control_mode", "keyboard_terminal")
+
+
+def sanitize_prim_token(value: str) -> str:
+    cleaned = re.sub(r"[^A-Za-z0-9_]+", "_", value.strip())
+    cleaned = cleaned.strip("_")
+    if not cleaned:
+        cleaned = "Asset"
+    if cleaned[0].isdigit():
+        cleaned = "Asset_" + cleaned
+    return cleaned
 
 
 def sanitize_filename(value: str) -> str:
@@ -277,6 +334,7 @@ def validate_crazyflie_room_profile(profile: dict[str, Any], project_root: Path 
         "app",
         "room",
         "obstacles",
+        "custom_assets",
         "landmark",
         "crazyflie",
         "cameras",
@@ -294,6 +352,7 @@ def validate_crazyflie_room_profile(profile: dict[str, Any], project_root: Path 
     _validate_app(profile["app"])
     _validate_room(profile["room"])
     _validate_obstacles(profile["obstacles"])
+    _validate_custom_assets(profile.get("custom_assets", []), project_root=project_root)
     _validate_landmark(profile["landmark"])
     _validate_crazyflie(profile["crazyflie"], project_root=project_root)
     _validate_cameras(profile["cameras"])
@@ -355,6 +414,39 @@ def _validate_obstacles(obstacles: Any) -> None:
         _require_bool(obstacle, "collision")
         _require_bool(obstacle, "negative", required=False)
         _validate_obstacle_visual(obstacle.get("visual", {}), f"{prefix}.visual")
+
+
+def _validate_custom_assets(custom_assets: Any, project_root: Path | None) -> None:
+    if not isinstance(custom_assets, list):
+        raise ValueError("custom_assets must be a list.")
+    names: set[str] = set()
+    for index, asset in enumerate(custom_assets):
+        prefix = f"custom_assets[{index}]"
+        if not isinstance(asset, dict):
+            raise ValueError(f"{prefix} must be a JSON object.")
+        if not isinstance(asset.get("name"), str) or not asset["name"].strip():
+            raise ValueError(f"{prefix}.name must be a non-empty string.")
+        if asset["name"] in names:
+            raise ValueError(f"Duplicate custom asset name: {asset['name']}")
+        names.add(asset["name"])
+        _require_bool(asset, "enabled")
+        if not isinstance(asset.get("usd_path"), str):
+            raise ValueError(f"{prefix}.usd_path must be a string.")
+        _require_prim_path(asset, "prim_path")
+        _validate_vector3(asset.get("position_m"), f"{prefix}.position_m")
+        _validate_vector3(asset.get("rotation_deg"), f"{prefix}.rotation_deg")
+        _validate_positive_vector3(asset.get("scale"), f"{prefix}.scale")
+        _require_bool(asset, "collision", required=False)
+        if bool(asset.get("enabled", False)):
+            usd_path = asset.get("usd_path", "").strip()
+            if not usd_path:
+                raise ValueError(f"{prefix}.usd_path cannot be empty when the asset is enabled.")
+            if not usd_path.lower().endswith((".usd", ".usda", ".usdc")):
+                raise ValueError(f"{prefix}.usd_path must point to a .usd, .usda, or .usdc file.")
+            if project_root is not None:
+                resolved = _resolve_project_path(project_root, usd_path)
+                if not resolved.exists() or not resolved.is_file():
+                    raise FileNotFoundError(f"Enabled custom asset file does not exist: {resolved}")
 
 
 def _validate_obstacle_visual(visual: Any, name: str) -> None:
@@ -473,6 +565,7 @@ def _validate_cameras(cameras: Any) -> None:
     _require_positive_int(capture, "rt_subframes", required=False)
     _require_bool(capture, "camera_params", required=False)
     _require_bool(capture, "wait_for_render", required=False)
+    _require_bool(capture, "save_last_frame_png", required=False)
 
     _validate_vector3(cameras["onboard"].get("rotation_deg"), "cameras.onboard.rotation_deg")
     _require_number(cameras["onboard"], "horizontal_aperture_mm")
@@ -500,6 +593,21 @@ def _validate_runtime(runtime: Any) -> None:
         raise ValueError("runtime.fps must be greater than zero.")
     if runtime.get("control_mode") not in CONTROL_MODES:
         raise ValueError(f"runtime.control_mode must be one of: {', '.join(CONTROL_MODES)}")
+    _require_number(runtime, "keyboard_command_hold_s", required=False)
+    if "keyboard_command_hold_s" in runtime and float(runtime["keyboard_command_hold_s"]) < 0.0:
+        raise ValueError("runtime.keyboard_command_hold_s must be zero or positive.")
+    scripted_loop = runtime.get("scripted_loop", {})
+    if scripted_loop is not None:
+        if not isinstance(scripted_loop, dict):
+            raise ValueError("runtime.scripted_loop must be a JSON object.")
+        _require_bool(scripted_loop, "enabled", required=False)
+        _require_bool(scripted_loop, "repeat", required=False)
+        _require_number(scripted_loop, "segment_s", required=False)
+        _require_number(scripted_loop, "hover_s", required=False)
+        if "segment_s" in scripted_loop and float(scripted_loop["segment_s"]) <= 0.0:
+            raise ValueError("runtime.scripted_loop.segment_s must be greater than zero.")
+        if "hover_s" in scripted_loop and float(scripted_loop["hover_s"]) < 0.0:
+            raise ValueError("runtime.scripted_loop.hover_s must be zero or positive.")
     _require_number(runtime, "duration_s")
     if runtime["duration_s"] < 0.0:
         raise ValueError("runtime.duration_s must be zero or positive. Zero means run until Isaac Sim is closed.")

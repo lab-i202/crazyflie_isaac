@@ -78,6 +78,8 @@ class ScenarioLauncherGui:
         self.current_profile: dict[str, Any] | None = None
         self.current_spec: ScenarioSpec = self.spec_by_id["crazyflie_room_basic"]
         self.selected_obstacle_index: int | None = None
+        self.selected_custom_asset_index: int | None = None
+        self.available_custom_asset_paths: list[str] = []
 
         self.root = tk.Tk()
         self.root.title("AWES Isaac Scenario Launcher")
@@ -142,6 +144,22 @@ class ScenarioLauncherGui:
         self._color_entries: dict[int, tk.Entry] = {}
         self._obstacle_map_canvas: tk.Canvas | None = None
 
+        self.asset_name = tk.StringVar()
+        self.asset_enabled = tk.BooleanVar()
+        self.asset_usd_path = tk.StringVar()
+        self.asset_prim_path = tk.StringVar()
+        self.asset_x = tk.DoubleVar()
+        self.asset_y = tk.DoubleVar()
+        self.asset_z = tk.DoubleVar()
+        self.asset_roll = tk.DoubleVar()
+        self.asset_pitch = tk.DoubleVar()
+        self.asset_yaw = tk.DoubleVar()
+        self.asset_scale_x = tk.DoubleVar()
+        self.asset_scale_y = tk.DoubleVar()
+        self.asset_scale_z = tk.DoubleVar()
+        self.asset_collision = tk.BooleanVar()
+        self.custom_asset_tree: ttk.Treeview | None = None
+
         self.landmark_enabled = tk.BooleanVar()
         self.landmark_x = tk.DoubleVar()
         self.landmark_y = tk.DoubleVar()
@@ -195,9 +213,13 @@ class ScenarioLauncherGui:
         self.iso_width = tk.IntVar()
         self.iso_height = tk.IntVar()
         self.iso_capture_rgb = tk.BooleanVar()
+        self.capture_save_last_frame = tk.BooleanVar()
 
         self.runtime_fps = tk.DoubleVar()
         self.runtime_control_mode = tk.StringVar()
+        self.runtime_keyboard_hold_s = tk.DoubleVar()
+        self.runtime_scripted_segment_s = tk.DoubleVar()
+        self.runtime_scripted_hover_s = tk.DoubleVar()
         self.runtime_duration_s = tk.DoubleVar()
         self.telemetry_enabled = tk.BooleanVar()
         self.telemetry_output_root = tk.StringVar()
@@ -227,6 +249,10 @@ class ScenarioLauncherGui:
             self.landmark_color,
             self.cf_x,
             self.cf_y,
+            self.asset_x,
+            self.asset_y,
+            self.asset_scale_x,
+            self.asset_scale_y,
         ]:
             variable.trace_add("write", lambda *_args: self._redraw_all_maps())
 
@@ -341,6 +367,7 @@ class ScenarioLauncherGui:
             room_tab = ScrollableFrame(notebook)
             scene_map_tab = ScrollableFrame(notebook)
             obstacles_tab = ScrollableFrame(notebook)
+            assets_tab = ScrollableFrame(notebook)
             landmark_tab = ScrollableFrame(notebook)
             crazyflie_tab = ScrollableFrame(notebook)
             cameras_tab = ScrollableFrame(notebook)
@@ -350,6 +377,7 @@ class ScenarioLauncherGui:
             notebook.add(room_tab, text="Room")
             notebook.add(scene_map_tab, text="Scene Map")
             notebook.add(obstacles_tab, text="Obstacles")
+            notebook.add(assets_tab, text="Custom assets")
             notebook.add(landmark_tab, text="Landmark")
             notebook.add(crazyflie_tab, text="Crazyflie")
             notebook.add(cameras_tab, text="Cameras")
@@ -359,11 +387,13 @@ class ScenarioLauncherGui:
             self._build_room_tab(room_tab.content)
             self._build_scene_map_tab(scene_map_tab.content)
             self._build_obstacles_tab(obstacles_tab.content)
+            self._build_custom_assets_tab(assets_tab.content)
             self._build_landmark_tab(landmark_tab.content)
             self._build_crazyflie_tab(crazyflie_tab.content)
             self._build_cameras_tab(cameras_tab.content)
             self._build_runtime_tab(runtime_tab.content)
             self._refresh_obstacle_tree()
+            self._refresh_custom_asset_tree()
             self._refresh_scene_element_tree()
             self.status_text.set("Crazyflie profile ready.")
             return
@@ -556,7 +586,7 @@ class ScenarioLauncherGui:
         ttk.Checkbutton(right, text="Collision enabled", variable=self.obs_collision).grid(row=row, column=0, columnspan=2, sticky="w", pady=4); row += 1
         ttk.Checkbutton(
             right,
-            text="Negative / wall cutout request",
+            text="Negative marker only - deprecated; use custom USD assets for holes/walls",
             variable=self.obs_negative,
         ).grid(row=row, column=0, columnspan=2, sticky="w", pady=4); row += 1
         ttk.Label(right, text="Visual material", font=("Segoe UI", 9, "bold")).grid(row=row, column=0, columnspan=2, sticky="w", pady=(10, 4)); row += 1
@@ -567,10 +597,82 @@ class ScenarioLauncherGui:
         ttk.Button(right, text="Apply obstacle edits", command=self._on_apply_obstacle).grid(row=row, column=0, columnspan=2, sticky="w", pady=(10, 0)); row += 1
         ttk.Label(
             right,
-            text="Negative obstacles are invisible in Isaac. They become rectangular wall cutouts only when they touch or nearly touch a room wall; otherwise they are ignored by geometry/collision.",
+            text="Negative obstacle markers are not recommended now. Use Fusion/SolidWorks/Blender to author holes/walls as USD assets, then load them in the Custom assets tab.",
             foreground="gray",
             wraplength=360,
         ).grid(row=row, column=0, columnspan=2, sticky="w", pady=(8, 0))
+        right.columnconfigure(1, weight=1)
+
+
+    def _build_custom_assets_tab(self, parent: ttk.Frame) -> None:
+        parent.configure(padding=12)
+        parent.columnconfigure(0, weight=1)
+        parent.columnconfigure(1, weight=1)
+
+        self.available_custom_asset_paths = self._scan_local_usd_assets()
+
+        left = ttk.Frame(parent)
+        left.grid(row=0, column=0, sticky="nsew", padx=(0, 12))
+        right = ttk.LabelFrame(parent, text="Selected custom USD asset", padding=8)
+        right.grid(row=0, column=1, sticky="nsew")
+        parent.rowconfigure(0, weight=1)
+
+        ttk.Label(
+            left,
+            text=(
+                "Drop .usd/.usda/.usdc files anywhere under the project assets/ folder. "
+                "Press Rescan, then pick one from the dropdown. This is deliberately simpler "
+                "than implementing boolean wall cutters in code."
+            ),
+            foreground="gray",
+            wraplength=440,
+        ).pack(anchor="w", pady=(0, 8))
+
+        buttons = ttk.Frame(left)
+        buttons.pack(fill="x", pady=(0, 8))
+        ttk.Button(buttons, text="Add asset", command=self._on_add_custom_asset).pack(side="left")
+        ttk.Button(buttons, text="Remove selected", command=self._on_remove_custom_asset).pack(side="left", padx=(8, 0))
+        ttk.Button(buttons, text="Rescan assets/", command=self._on_rescan_custom_assets).pack(side="left", padx=(8, 0))
+
+        columns = ("enabled", "path", "pos")
+        self.custom_asset_tree = ttk.Treeview(left, columns=columns, show="tree headings", height=14)
+        self.custom_asset_tree.heading("#0", text="Name")
+        self.custom_asset_tree.heading("enabled", text="On")
+        self.custom_asset_tree.heading("path", text="USD path")
+        self.custom_asset_tree.heading("pos", text="Position")
+        self.custom_asset_tree.column("#0", width=130)
+        self.custom_asset_tree.column("enabled", width=45, anchor="center")
+        self.custom_asset_tree.column("path", width=220)
+        self.custom_asset_tree.column("pos", width=110)
+        self.custom_asset_tree.pack(fill="both", expand=True)
+        self.custom_asset_tree.bind("<<TreeviewSelect>>", self._on_custom_asset_selected)
+
+        row = 0
+        ttk.Checkbutton(right, text="Enabled", variable=self.asset_enabled).grid(row=row, column=0, columnspan=3, sticky="w", pady=4); row += 1
+        self._add_string_row(right, row, "Name", self.asset_name); row += 1
+        ttk.Label(right, text="USD asset under assets/").grid(row=row, column=0, sticky="w", pady=4)
+        self.custom_asset_combo = ttk.Combobox(right, textvariable=self.asset_usd_path, values=self.available_custom_asset_paths, width=44)
+        self.custom_asset_combo.grid(row=row, column=1, sticky="ew", padx=8, pady=4)
+        ttk.Button(right, text="Browse", command=self._on_browse_custom_asset_usd).grid(row=row, column=2, sticky="w", pady=4); row += 1
+        self._add_string_row(right, row, "Prim path", self.asset_prim_path); row += 1
+        ttk.Separator(right).grid(row=row, column=0, columnspan=3, sticky="ew", pady=8); row += 1
+        self._add_float_row(right, row, "X [m]", self.asset_x); row += 1
+        self._add_float_row(right, row, "Y [m]", self.asset_y); row += 1
+        self._add_float_row(right, row, "Z [m]", self.asset_z); row += 1
+        self._add_float_row(right, row, "Roll [deg]", self.asset_roll); row += 1
+        self._add_float_row(right, row, "Pitch [deg]", self.asset_pitch); row += 1
+        self._add_float_row(right, row, "Yaw [deg]", self.asset_yaw); row += 1
+        self._add_float_row(right, row, "Scale X", self.asset_scale_x); row += 1
+        self._add_float_row(right, row, "Scale Y", self.asset_scale_y); row += 1
+        self._add_float_row(right, row, "Scale Z", self.asset_scale_z); row += 1
+        ttk.Checkbutton(right, text="Collision requested (reserved; imported asset collision is not auto-generated yet)", variable=self.asset_collision).grid(row=row, column=0, columnspan=3, sticky="w", pady=4); row += 1
+        ttk.Button(right, text="Apply asset edits", command=self._on_apply_custom_asset_edits).grid(row=row, column=0, columnspan=3, sticky="w", pady=(8, 0)); row += 1
+        ttk.Label(
+            right,
+            text="Use the Scene Map to move enabled custom assets in X/Y. Use this tab for file path, Z, rotation, and scale.",
+            foreground="gray",
+            wraplength=420,
+        ).grid(row=row, column=0, columnspan=3, sticky="w", pady=(8, 0))
         right.columnconfigure(1, weight=1)
 
     def _build_landmark_tab(self, parent: ttk.Frame) -> None:
@@ -650,7 +752,12 @@ class ScenarioLauncherGui:
         self._add_float_row(parent, row, "Isometric focal length [mm]", self.iso_focal); row += 1
         self._add_int_row(parent, row, "Isometric width", self.iso_width); row += 1
         self._add_int_row(parent, row, "Isometric height", self.iso_height); row += 1
-        ttk.Checkbutton(parent, text="Capture RGB to outputs/<scene>/camera_isometric", variable=self.iso_capture_rgb).grid(row=row, column=0, columnspan=2, sticky="w", pady=4)
+        ttk.Checkbutton(parent, text="Capture RGB to outputs/<scene>/camera_isometric", variable=self.iso_capture_rgb).grid(row=row, column=0, columnspan=2, sticky="w", pady=4); row += 1
+        ttk.Checkbutton(
+            parent,
+            text="Keep last_frame.png updated for enabled cameras, even when RGB archive is off",
+            variable=self.capture_save_last_frame,
+        ).grid(row=row, column=0, columnspan=2, sticky="w", pady=4)
 
     def _build_runtime_tab(self, parent: ttk.Frame) -> None:
         parent.configure(padding=12)
@@ -659,6 +766,9 @@ class ScenarioLauncherGui:
         self._add_float_row(parent, row, "FPS", self.runtime_fps); row += 1
         ttk.Label(parent, text="Control mode").grid(row=row, column=0, sticky="w", pady=4)
         ttk.Combobox(parent, textvariable=self.runtime_control_mode, values=CONTROL_MODES, state="readonly", width=22).grid(row=row, column=1, sticky="w", padx=8, pady=4); row += 1
+        self._add_float_row(parent, row, "Keyboard command hold [s]", self.runtime_keyboard_hold_s); row += 1
+        self._add_float_row(parent, row, "Scripted loop segment [s]", self.runtime_scripted_segment_s); row += 1
+        self._add_float_row(parent, row, "Scripted loop hover [s]", self.runtime_scripted_hover_s); row += 1
         self._add_float_row(parent, row, "Duration [s], 0 = until closed", self.runtime_duration_s); row += 1
         ttk.Checkbutton(parent, text="Enable telemetry", variable=self.telemetry_enabled).grid(row=row, column=0, columnspan=2, sticky="w", pady=4); row += 1
         ttk.Label(parent, text="Telemetry output root").grid(row=row, column=0, sticky="w", pady=4)
@@ -760,10 +870,20 @@ class ScenarioLauncherGui:
         self.iso_width.set(iso["resolution"][0])
         self.iso_height.set(iso["resolution"][1])
         self.iso_capture_rgb.set(iso["capture_rgb"])
+        self.capture_save_last_frame.set(bool(profile["cameras"].get("capture", {}).get("save_last_frame_png", True)))
+
+        self.selected_custom_asset_index = None
+        self.asset_name.set("")
+        self.asset_usd_path.set("")
+        self.asset_prim_path.set("")
 
         runtime = profile["runtime"]
         self.runtime_fps.set(runtime["fps"])
         self.runtime_control_mode.set(runtime["control_mode"])
+        self.runtime_keyboard_hold_s.set(float(runtime.get("keyboard_command_hold_s", 0.20)))
+        scripted_loop = runtime.get("scripted_loop", {})
+        self.runtime_scripted_segment_s.set(float(scripted_loop.get("segment_s", 1.5)))
+        self.runtime_scripted_hover_s.set(float(scripted_loop.get("hover_s", 0.5)))
         self.runtime_duration_s.set(runtime["duration_s"])
         self.telemetry_enabled.set(runtime["telemetry_enabled"])
         self.telemetry_output_root.set(runtime["telemetry_output_root"])
@@ -813,6 +933,7 @@ class ScenarioLauncherGui:
                 validate_crazyflie_room_profile(profile)
             self.current_profile = profile
             self._refresh_obstacle_tree()
+            self._refresh_custom_asset_tree()
             self._refresh_scene_element_tree()
             self._redraw_all_maps()
             self.status_text.set("Views refreshed from all tabs. Pending obstacle edits were also applied.")
@@ -827,6 +948,7 @@ class ScenarioLauncherGui:
 
         profile = copy.deepcopy(self.current_profile or default_crazyflie_room_profile())
         self._sync_selected_obstacle_widgets_into_profile(profile)
+        self._sync_selected_custom_asset_widgets_into_profile(profile)
         profile["scene_name"] = self.scene_name.get().strip()
         profile["scenario_id"] = "crazyflie_room_basic"
 
@@ -915,10 +1037,19 @@ class ScenarioLauncherGui:
             }
         )
 
+        profile["cameras"].setdefault("capture", {})["save_last_frame_png"] = self.capture_save_last_frame.get()
+
         profile["runtime"].update(
             {
                 "fps": self.runtime_fps.get(),
                 "control_mode": self.runtime_control_mode.get(),
+                "keyboard_command_hold_s": self.runtime_keyboard_hold_s.get(),
+                "scripted_loop": {
+                    "enabled": self.runtime_control_mode.get() == "scripted_loop",
+                    "segment_s": self.runtime_scripted_segment_s.get(),
+                    "hover_s": self.runtime_scripted_hover_s.get(),
+                    "repeat": True,
+                },
                 "duration_s": self.runtime_duration_s.get(),
                 "telemetry_enabled": self.telemetry_enabled.get(),
                 "telemetry_output_root": self.telemetry_output_root.get().strip(),
@@ -931,6 +1062,165 @@ class ScenarioLauncherGui:
         )
 
         return profile
+
+
+    def _scan_local_usd_assets(self) -> list[str]:
+        assets_root = self.project_root / "assets"
+        if not assets_root.exists():
+            return []
+        suffixes = {".usd", ".usda", ".usdc"}
+        found: list[str] = []
+        for path in sorted(assets_root.rglob("*")):
+            if path.is_file() and path.suffix.lower() in suffixes:
+                try:
+                    found.append(str(path.resolve().relative_to(self.project_root)).replace("\\", "/"))
+                except ValueError:
+                    found.append(str(path.resolve()))
+        return found
+
+    def _on_rescan_custom_assets(self) -> None:
+        self.available_custom_asset_paths = self._scan_local_usd_assets()
+        if hasattr(self, "custom_asset_combo"):
+            self.custom_asset_combo.configure(values=self.available_custom_asset_paths)
+        self.status_text.set(f"Found {len(self.available_custom_asset_paths)} local USD assets under assets/.")
+        self._refresh_custom_asset_tree()
+
+    def _on_browse_custom_asset_usd(self) -> None:
+        path = filedialog.askopenfilename(
+            title="Select custom USD asset",
+            initialdir=str(self.project_root / "assets"),
+            filetypes=[("USD files", "*.usd *.usda *.usdc"), ("All files", "*.*")],
+        )
+        if not path:
+            return
+        try:
+            relative = Path(path).resolve().relative_to(self.project_root)
+            self.asset_usd_path.set(str(relative).replace("\\", "/"))
+        except ValueError:
+            self.asset_usd_path.set(path)
+
+    def _default_custom_asset(self, index: int, usd_path: str = "") -> dict[str, Any]:
+        name = f"custom_asset_{index + 1:02d}"
+        return {
+            "name": name,
+            "enabled": True,
+            "usd_path": usd_path,
+            "prim_path": f"/World/CustomAssets/{safe_prim_name(name)}",
+            "position_m": [0.0, 0.0, 0.0],
+            "rotation_deg": [0.0, 0.0, 0.0],
+            "scale": [1.0, 1.0, 1.0],
+            "collision": False,
+        }
+
+    def _on_add_custom_asset(self) -> None:
+        if self.current_profile is None:
+            return
+        self._sync_selected_custom_asset_widgets_into_profile(self.current_profile)
+        assets = self.current_profile.setdefault("custom_assets", [])
+        first_path = self.available_custom_asset_paths[0] if self.available_custom_asset_paths else ""
+        assets.append(self._default_custom_asset(len(assets), first_path))
+        self.selected_custom_asset_index = len(assets) - 1
+        self._refresh_custom_asset_tree()
+        self._load_custom_asset_into_editor(assets[self.selected_custom_asset_index])
+        self.selected_scene_element.set(f"asset:{self.selected_custom_asset_index}")
+        self._refresh_scene_element_tree()
+        self._redraw_all_maps()
+
+    def _on_remove_custom_asset(self) -> None:
+        if self.current_profile is None or self.selected_custom_asset_index is None:
+            return
+        assets = self.current_profile.get("custom_assets", [])
+        index = self.selected_custom_asset_index
+        if not (0 <= index < len(assets)):
+            return
+        removed = assets.pop(index)
+        self.selected_custom_asset_index = None
+        self.asset_name.set("")
+        self.asset_usd_path.set("")
+        self.asset_prim_path.set("")
+        self._refresh_custom_asset_tree()
+        self._refresh_scene_element_tree()
+        self._redraw_all_maps()
+        self.status_text.set(f"Removed custom asset: {removed.get('name', index)}")
+
+    def _refresh_custom_asset_tree(self) -> None:
+        tree = self.custom_asset_tree
+        if tree is None:
+            return
+        for item in tree.get_children():
+            tree.delete(item)
+        if self.current_profile is None:
+            return
+        for index, asset in enumerate(self.current_profile.get("custom_assets", [])):
+            pos = asset.get("position_m", [0.0, 0.0, 0.0])
+            tree.insert(
+                "",
+                "end",
+                iid=str(index),
+                text=str(asset.get("name", f"custom_asset_{index + 1:02d}")),
+                values=("yes" if asset.get("enabled", True) else "no", str(asset.get("usd_path", "")), f"{float(pos[0]):+.2f}, {float(pos[1]):+.2f}, {float(pos[2]):+.2f}"),
+            )
+        if self.selected_custom_asset_index is not None and tree.exists(str(self.selected_custom_asset_index)):
+            tree.selection_set(str(self.selected_custom_asset_index))
+
+    def _on_custom_asset_selected(self, _event: tk.Event | None = None) -> None:
+        tree = self.custom_asset_tree
+        if tree is None or self.current_profile is None:
+            return
+        selection = tree.selection()
+        if not selection:
+            return
+        index = int(selection[0])
+        assets = self.current_profile.get("custom_assets", [])
+        if not (0 <= index < len(assets)):
+            return
+        self.selected_custom_asset_index = index
+        self._load_custom_asset_into_editor(assets[index])
+        self.selected_scene_element.set(f"asset:{index}")
+        self._refresh_scene_element_tree()
+        self._redraw_all_maps()
+
+    def _load_custom_asset_into_editor(self, asset: dict[str, Any]) -> None:
+        self.asset_name.set(str(asset.get("name", "")))
+        self.asset_enabled.set(bool(asset.get("enabled", True)))
+        self.asset_usd_path.set(str(asset.get("usd_path", "")))
+        self.asset_prim_path.set(str(asset.get("prim_path", "/World/CustomAssets/Asset")))
+        pos = asset.get("position_m", [0.0, 0.0, 0.0])
+        rot = asset.get("rotation_deg", [0.0, 0.0, 0.0])
+        scale = asset.get("scale", [1.0, 1.0, 1.0])
+        self.asset_x.set(float(pos[0])); self.asset_y.set(float(pos[1])); self.asset_z.set(float(pos[2]))
+        self.asset_roll.set(float(rot[0])); self.asset_pitch.set(float(rot[1])); self.asset_yaw.set(float(rot[2]))
+        self.asset_scale_x.set(float(scale[0])); self.asset_scale_y.set(float(scale[1])); self.asset_scale_z.set(float(scale[2]))
+        self.asset_collision.set(bool(asset.get("collision", False)))
+
+    def _sync_selected_custom_asset_widgets_into_profile(self, profile: dict[str, Any]) -> None:
+        index = self.selected_custom_asset_index
+        if index is None:
+            return
+        assets = profile.get("custom_assets", [])
+        if not (0 <= index < len(assets)):
+            return
+        name = self.asset_name.get().strip() or f"custom_asset_{index + 1:02d}"
+        prim_path = self.asset_prim_path.get().strip() or f"/World/CustomAssets/{safe_prim_name(name)}"
+        assets[index] = {
+            "name": name,
+            "enabled": self.asset_enabled.get(),
+            "usd_path": self.asset_usd_path.get().strip(),
+            "prim_path": prim_path,
+            "position_m": [self.asset_x.get(), self.asset_y.get(), self.asset_z.get()],
+            "rotation_deg": [self.asset_roll.get(), self.asset_pitch.get(), self.asset_yaw.get()],
+            "scale": [self.asset_scale_x.get(), self.asset_scale_y.get(), self.asset_scale_z.get()],
+            "collision": self.asset_collision.get(),
+        }
+
+    def _on_apply_custom_asset_edits(self) -> None:
+        if self.current_profile is None:
+            return
+        self._sync_selected_custom_asset_widgets_into_profile(self.current_profile)
+        self._refresh_custom_asset_tree()
+        self._refresh_scene_element_tree()
+        self._redraw_all_maps()
+        self.status_text.set("Applied selected custom asset edits.")
 
     def _refresh_obstacle_tree(self) -> None:
         if not hasattr(self, "obstacle_tree"):
@@ -1200,6 +1490,19 @@ class ScenarioLauncherGui:
         canvas.create_line(cx0, cy0, cx1, cy1, fill="#b28282")
 
         # Landmark.
+        for index, asset in enumerate(self.current_profile.get("custom_assets", [])):
+            if not asset.get("enabled", True):
+                continue
+            px, py, _pz = [float(v) for v in asset.get("position_m", [0.0, 0.0, 0.0])]
+            sx_a, sy_a, _sz_a = [float(v) for v in asset.get("scale", [1.0, 1.0, 1.0])]
+            cx, cy = self._room_xy_to_canvas_for_canvas(canvas, px, py)
+            radius = max(8.0, min(24.0, 10.0 * max(sx_a, sy_a)))
+            element_id = f"asset:{index}"
+            selected_asset = selected == element_id
+            outline = "#000000" if selected_asset else "#444444"
+            canvas.create_polygon(cx, cy - radius, cx + radius, cy, cx, cy + radius, cx - radius, cy, fill="#c0c0c0", outline=outline, width=3 if selected_asset else 1)
+            canvas.create_text(cx + radius + 4, cy - radius, text="USD", anchor="w", fill="#333333")
+
         landmark = self.current_profile.get("landmark", {})
         if landmark.get("enabled", True):
             lx, ly, _lz = [float(v) for v in landmark.get("position_m", [0.0, 0.0, 0.0])]
@@ -1268,6 +1571,19 @@ class ScenarioLauncherGui:
         cf_pose = self.current_profile.get("crazyflie", {}).get("initial_pose", {})
         cfp = cf_pose.get("position_m", [0.0, 0.0, 0.0])
         elements.append(("crazyflie:main", "Crazyflie", "crazyflie", f"{float(cfp[0]):+.2f}, {float(cfp[1]):+.2f}", f"{float(cfp[2]):.2f}", True))
+        for index, asset in enumerate(self.current_profile.get("custom_assets", [])):
+            if not asset.get("enabled", True):
+                continue
+            px, py, _pz = [float(v) for v in asset.get("position_m", [0.0, 0.0, 0.0])]
+            sx_a, sy_a, _sz_a = [float(v) for v in asset.get("scale", [1.0, 1.0, 1.0])]
+            cx, cy = self._room_xy_to_canvas_for_canvas(canvas, px, py)
+            radius = max(8.0, min(24.0, 10.0 * max(sx_a, sy_a)))
+            element_id = f"asset:{index}"
+            selected_asset = selected == element_id
+            outline = "#000000" if selected_asset else "#444444"
+            canvas.create_polygon(cx, cy - radius, cx + radius, cy, cx, cy + radius, cx - radius, cy, fill="#c0c0c0", outline=outline, width=3 if selected_asset else 1)
+            canvas.create_text(cx + radius + 4, cy - radius, text="USD", anchor="w", fill="#333333")
+
         landmark = self.current_profile.get("landmark", {})
         lp = landmark.get("position_m", [0.0, 0.0, 0.0])
         elements.append(("landmark:main", "Luminous landmark", "landmark", f"{float(lp[0]):+.2f}, {float(lp[1]):+.2f}", f"{float(lp[2]):.2f}", True))
@@ -1277,6 +1593,18 @@ class ScenarioLauncherGui:
                 f"obstacle:{index}",
                 str(obstacle.get("name", f"obstacle_{index + 1:02d}")),
                 str(obstacle.get("kind", "box")),
+                f"{float(pos[0]):+.2f}, {float(pos[1]):+.2f}",
+                f"{float(pos[2]):.2f}",
+                True,
+            ))
+        for index, asset in enumerate(self.current_profile.get("custom_assets", [])):
+            if not asset.get("enabled", True):
+                continue
+            pos = asset.get("position_m", [0.0, 0.0, 0.0])
+            elements.append((
+                f"asset:{index}",
+                str(asset.get("name", f"custom_asset_{index + 1:02d}")),
+                "custom_usd",
                 f"{float(pos[0]):+.2f}, {float(pos[1]):+.2f}",
                 f"{float(pos[2]):.2f}",
                 True,
@@ -1301,6 +1629,13 @@ class ScenarioLauncherGui:
                 self.obstacle_tree.selection_set(str(index))
                 self.obstacle_tree.see(str(index))
                 self._on_obstacle_selected()
+        if element_id.startswith("asset:"):
+            index = int(element_id.split(":", 1)[1])
+            self.selected_custom_asset_index = index
+            if self.custom_asset_tree is not None and self.custom_asset_tree.exists(str(index)):
+                self.custom_asset_tree.selection_set(str(index))
+                self.custom_asset_tree.see(str(index))
+                self._on_custom_asset_selected()
         self._redraw_scene_map()
         self.status_text.set(self._scene_selection_hint(element_id))
 
@@ -1314,7 +1649,9 @@ class ScenarioLauncherGui:
         if element_id == "landmark:main":
             return "Selected luminous landmark. Click empty map space to move X/Y; edit Z/light settings in the Landmark tab."
         if element_id.startswith("obstacle:"):
-            return "Selected obstacle. Click empty map space to move X/Y; edit dimensions/material/negative in the Obstacles tab."
+            return "Selected obstacle. Click empty map space to move X/Y; edit dimensions/material in the Obstacles tab. For holes/walls, use Custom assets."
+        if element_id.startswith("asset:"):
+            return "Selected custom USD asset. Click empty map space to move X/Y; edit path/Z/rotation/scale in the Custom assets tab."
         return "Selected scene element."
 
     def _on_scene_map_click(self, event: tk.Event) -> None:
@@ -1334,6 +1671,11 @@ class ScenarioLauncherGui:
                 if hasattr(self, "obstacle_tree") and self.obstacle_tree.exists(str(self.selected_obstacle_index)):
                     self.obstacle_tree.selection_set(str(self.selected_obstacle_index))
                     self._on_obstacle_selected()
+            if hit.startswith("asset:"):
+                self.selected_custom_asset_index = int(hit.split(":", 1)[1])
+                if self.custom_asset_tree is not None and self.custom_asset_tree.exists(str(self.selected_custom_asset_index)):
+                    self.custom_asset_tree.selection_set(str(self.selected_custom_asset_index))
+                    self._on_custom_asset_selected()
             self._redraw_all_maps()
             self.status_text.set(self._scene_selection_hint(hit))
             return
@@ -1379,6 +1721,17 @@ class ScenarioLauncherGui:
                 self.obs_x.set(x)
                 self.obs_y.set(y)
             return True
+        if element_id.startswith("asset:"):
+            index = int(element_id.split(":", 1)[1])
+            assets = self.current_profile.get("custom_assets", [])
+            if not (0 <= index < len(assets)):
+                return False
+            assets[index]["position_m"][0] = x
+            assets[index]["position_m"][1] = y
+            if self.selected_custom_asset_index == index:
+                self.asset_x.set(x)
+                self.asset_y.set(y)
+            return True
         return False
 
     def _negative_obstacle_map_label(self, obstacle: dict[str, Any]) -> str:
@@ -1422,6 +1775,19 @@ class ScenarioLauncherGui:
         if x_left + 8.0 < canvas_x < x_right - 8.0 and y_top + 8.0 < canvas_y < y_bottom - 8.0:
             candidates.append((500.0, "room:floor"))
 
+        for index, asset in enumerate(self.current_profile.get("custom_assets", [])):
+            if not asset.get("enabled", True):
+                continue
+            px, py, _pz = [float(v) for v in asset.get("position_m", [0.0, 0.0, 0.0])]
+            sx_a, sy_a, _sz_a = [float(v) for v in asset.get("scale", [1.0, 1.0, 1.0])]
+            cx, cy = self._room_xy_to_canvas_for_canvas(canvas, px, py)
+            radius = max(8.0, min(24.0, 10.0 * max(sx_a, sy_a)))
+            element_id = f"asset:{index}"
+            selected_asset = selected == element_id
+            outline = "#000000" if selected_asset else "#444444"
+            canvas.create_polygon(cx, cy - radius, cx + radius, cy, cx, cy + radius, cx - radius, cy, fill="#c0c0c0", outline=outline, width=3 if selected_asset else 1)
+            canvas.create_text(cx + radius + 4, cy - radius, text="USD", anchor="w", fill="#333333")
+
         landmark = self.current_profile.get("landmark", {})
         if landmark.get("enabled", True):
             lx, ly, _lz = [float(v) for v in landmark.get("position_m", [0.0, 0.0, 0.0])]
@@ -1448,6 +1814,17 @@ class ScenarioLauncherGui:
                 center_x, center_y = self._room_xy_to_canvas_for_canvas(self._scene_map_canvas, px, py)
                 dist = ((canvas_x - center_x) ** 2 + (canvas_y - center_y) ** 2) ** 0.5
                 candidates.append((dist, f"obstacle:{index}"))
+
+        for index, asset in enumerate(self.current_profile.get("custom_assets", [])):
+            if not asset.get("enabled", True):
+                continue
+            px, py, _pz = [float(v) for v in asset.get("position_m", [0.0, 0.0, 0.0])]
+            sx_a, sy_a, _sz_a = [float(v) for v in asset.get("scale", [1.0, 1.0, 1.0])]
+            radius = max(8.0, min(24.0, 10.0 * max(sx_a, sy_a)))
+            cx, cy = self._room_xy_to_canvas_for_canvas(self._scene_map_canvas, px, py)
+            dist = ((canvas_x - cx) ** 2 + (canvas_y - cy) ** 2) ** 0.5
+            if dist <= radius:
+                candidates.append((dist, f"asset:{index}"))
         if not candidates:
             return None
         candidates.sort(key=lambda item: item[0])
@@ -1549,6 +1926,19 @@ class ScenarioLauncherGui:
                 canvas.create_rectangle(ox0, oy0, ox1, oy1, fill=fill_color, outline=outline, width=width_px, dash=dash)
             if obstacle.get("negative", False):
                 canvas.create_text((ox0 + ox1) * 0.5, (oy0 + oy1) * 0.5, text=self._negative_obstacle_map_label(obstacle), fill="#333333")
+
+        for index, asset in enumerate(self.current_profile.get("custom_assets", [])):
+            if not asset.get("enabled", True):
+                continue
+            px, py, _pz = [float(v) for v in asset.get("position_m", [0.0, 0.0, 0.0])]
+            sx_a, sy_a, _sz_a = [float(v) for v in asset.get("scale", [1.0, 1.0, 1.0])]
+            cx, cy = self._room_xy_to_canvas_for_canvas(canvas, px, py)
+            radius = max(8.0, min(24.0, 10.0 * max(sx_a, sy_a)))
+            element_id = f"asset:{index}"
+            selected_asset = selected == element_id
+            outline = "#000000" if selected_asset else "#444444"
+            canvas.create_polygon(cx, cy - radius, cx + radius, cy, cx, cy + radius, cx - radius, cy, fill="#c0c0c0", outline=outline, width=3 if selected_asset else 1)
+            canvas.create_text(cx + radius + 4, cy - radius, text="USD", anchor="w", fill="#333333")
 
         landmark = self.current_profile.get("landmark", {})
         if landmark.get("enabled", True):
@@ -1660,6 +2050,10 @@ class ScenarioLauncherGui:
         self.result = None
         self.root.destroy()
 
+    def _add_string_row(self, parent: ttk.Frame, row: int, label: str, variable: tk.StringVar) -> None:
+        ttk.Label(parent, text=label).grid(row=row, column=0, sticky="w", pady=4)
+        ttk.Entry(parent, textvariable=variable, width=36).grid(row=row, column=1, sticky="ew", padx=8, pady=4)
+
     def _add_float_row(self, parent: ttk.Frame, row: int, label: str, variable: tk.DoubleVar) -> None:
         ttk.Label(parent, text=label).grid(row=row, column=0, sticky="w", pady=4)
         ttk.Entry(parent, textvariable=variable, width=18).grid(row=row, column=1, sticky="w", padx=8, pady=4)
@@ -1698,6 +2092,14 @@ class ScenarioLauncherGui:
         _rgb, hex_color = colorchooser.askcolor(color=initial)
         if hex_color:
             variable.set(hex_color.lower())
+
+
+def safe_prim_name(value: str) -> str:
+    cleaned = "".join(ch if ch.isalnum() or ch == "_" else "_" for ch in value.strip())
+    cleaned = cleaned.strip("_") or "Asset"
+    if cleaned[0].isdigit():
+        cleaned = "Asset_" + cleaned
+    return cleaned
 
 
 def run_scenario_launcher_gui(project_root: Path) -> dict[str, Any] | None:

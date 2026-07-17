@@ -1,12 +1,12 @@
 {
-  "scene_name": "crazyflie_room_basic",
-  "frame": 1307,
-  "time_s": 72.76867109999876,
+  "scene_name": "crazyflie_room_basic_weekend",
+  "frame": 5576385,
+  "time_s": 336370.3303276,
   "pose": {
     "position_m": [
-      -1.3399999999999999,
-      -0.91,
-      0.7733333333333338
+      1.5999999999999996,
+      -0.44999999999999907,
+      1.8333333333333337
     ],
     "rotation_deg": [
       0.0,
@@ -15,10 +15,10 @@
     ]
   },
   "command": {
-    "label": "scripted_forward",
-    "vx_m_s": 0.6,
+    "label": "scripted_down",
+    "vx_m_s": 0.0,
     "vy_m_s": 0.0,
-    "vz_m_s": 0.0,
+    "vz_m_s": -0.4,
     "yaw_rate_deg_s": 0.0
   },
   "control_mode": "scripted_loop",
