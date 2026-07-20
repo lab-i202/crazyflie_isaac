@@ -21,28 +21,41 @@
       ],
       "wall_thickness_m": 0.05,
       "floor_color": [
-        0.25,
-        0.25,
-        0.28
+        0.18823529411764706,
+        0.34509803921568627,
+        0.2
       ],
       "wall_color": [
-        0.65,
-        0.68,
-        0.72
+        0.7843137254901961,
+        0.8,
+        0.8235294117647058
       ],
       "camera_background_rgb": [
         35,
         35,
         35
-      ]
+      ],
+      "has_roof": false,
+      "floor_material": {
+        "opacity": 1.0,
+        "roughness": 0.75,
+        "metallic": 0.0,
+        "reflectance": 0.0
+      },
+      "wall_material": {
+        "opacity": 1.0,
+        "roughness": 0.75,
+        "metallic": 0.0,
+        "reflectance": 0.0
+      }
     },
     "crazyflie": {
       "usd_path": "",
       "collision_radius_m": 0.12,
       "initial_pose": {
         "position_m": [
-          -1.4,
-          -0.9,
+          -0.8671875,
+          -0.46875,
           0.7
         ],
         "yaw_deg": 0.0
@@ -56,7 +69,7 @@
     },
     "landmark": {
       "position_m": [
-        1.55,
+        2.0,
         0.0,
         0.8
       ],
@@ -67,7 +80,9 @@
       ],
       "radius_m": 0.1,
       "emissive_intensity": 8.0,
-      "light_intensity": 2500.0
+      "light_intensity": 2500.0,
+      "enabled": true,
+      "exposure": 0.0
     },
     "sensors": {
       "max_range_m": 4.0,
@@ -90,7 +105,12 @@
       0.03
     ],
     "warmup_updates": 8,
-    "updates_per_control_step": 1
+    "updates_per_control_step": 1,
+    "local_rotation_deg": [
+      0.0,
+      0.0,
+      0.0
+    ]
   },
   "vision": {
     "hsv_lower": [
@@ -106,7 +126,19 @@
     "min_area_px": 12.0,
     "max_area_fraction": 0.45,
     "min_circularity": 0.35,
-    "morphology_kernel": 3
+    "morphology_kernel": 3,
+    "threshold_mode": "brightness",
+    "brightness_threshold": 220,
+    "grayscale_threshold": 220,
+    "adaptive_block_size": 21,
+    "adaptive_c": 3.0,
+    "gaussian_blur_kernel": 1,
+    "morph_open_kernel": 3,
+    "morph_close_kernel": 3,
+    "erode_iterations": 0,
+    "dilate_iterations": 0,
+    "invert_mask": false,
+    "prefer_brightest_blob": true
   },
   "policy": {
     "layers": [
@@ -166,6 +198,30 @@
       "frame_stride": 5,
       "store_steps_in_database": false
     },
-    "heartbeat_steps": 10
+    "heartbeat_steps": 10,
+    "latest_mirror": {
+      "enabled": true,
+      "folder_name": "",
+      "database_sync_interval_s": 2.0,
+      "copy_csv": true,
+      "copy_checkpoints": true
+    }
+  },
+  "scenario_preview": {
+    "enabled": false,
+    "refresh_interval_s": 0.25,
+    "camera": {
+      "auto_frame_room": true,
+      "azimuth_deg": 45.0,
+      "elevation_deg": 28.0,
+      "distance_scale": 1.25,
+      "padding_m": 0.5,
+      "focal_length_mm": 35.0,
+      "look_at_m": [
+        0.0,
+        0.0,
+        0.8
+      ]
+    }
   }
 }

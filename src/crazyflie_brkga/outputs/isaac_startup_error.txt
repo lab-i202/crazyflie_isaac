@@ -1,0 +1,30 @@
+====================================================================================================
+Timestamp: 2026-07-20T18:17:42
+Traceback (most recent call last):
+  File "C:\Users\Admin\Documents\Github\crazyflie_isaac\src\crazyflie_brkga\train_isaac.py", line 34, in main
+    versions = validate_isaac_runtime(require_cuda=True)
+  File "C:\Users\Admin\Documents\Github\crazyflie_isaac\src\crazyflie_brkga\cfbrkga\runtime_compat.py", line 63, in validate_isaac_runtime
+    versions = collect_runtime_versions()
+  File "C:\Users\Admin\Documents\Github\crazyflie_isaac\src\crazyflie_brkga\cfbrkga\runtime_compat.py", line 28, in collect_runtime_versions
+    import cv2
+ModuleNotFoundError: No module named 'cv2'
+====================================================================================================
+Timestamp: 2026-07-20T18:18:43
+Traceback (most recent call last):
+  File "C:\Users\Admin\Documents\Github\crazyflie_isaac\src\crazyflie_brkga\train_isaac.py", line 34, in main
+    versions = validate_isaac_runtime(require_cuda=True)
+  File "C:\Users\Admin\Documents\Github\crazyflie_isaac\src\crazyflie_brkga\cfbrkga\runtime_compat.py", line 63, in validate_isaac_runtime
+    versions = collect_runtime_versions()
+  File "C:\Users\Admin\Documents\Github\crazyflie_isaac\src\crazyflie_brkga\cfbrkga\runtime_compat.py", line 28, in collect_runtime_versions
+    import cv2
+ModuleNotFoundError: No module named 'cv2'
+====================================================================================================
+Timestamp: 2026-07-20T18:18:56
+Traceback (most recent call last):
+  File "C:\Users\Admin\Documents\Github\crazyflie_isaac\src\crazyflie_brkga\train_isaac.py", line 34, in main
+    versions = validate_isaac_runtime(require_cuda=True)
+  File "C:\Users\Admin\Documents\Github\crazyflie_isaac\src\crazyflie_brkga\cfbrkga\runtime_compat.py", line 63, in validate_isaac_runtime
+    versions = collect_runtime_versions()
+  File "C:\Users\Admin\Documents\Github\crazyflie_isaac\src\crazyflie_brkga\cfbrkga\runtime_compat.py", line 28, in collect_runtime_versions
+    import cv2
+ModuleNotFoundError: No module named 'cv2'

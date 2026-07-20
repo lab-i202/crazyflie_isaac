@@ -16,6 +16,7 @@ from .config import resolve_project_path
 from .csv_export import export_csv_files
 from .database import ExperimentDatabase
 from .model import GENOME_LENGTH, parameter_manifest
+from .latest_run import LatestRunMirror
 from .types import EvaluationResult, Individual
 
 
@@ -56,6 +57,13 @@ class TrainingCoordinator:
         self.run_id = self.db.create_run(cfg, self.output_dir, evaluator.backend_name)
         self.db.ensure_environment_slots(self.run_id, int(cfg["environment"]["num_parallel_envs"]))
         self.evaluator.output_dir = self.output_dir
+        self.latest_mirror = LatestRunMirror(
+            output_root=output_root,
+            source_dir=self.output_dir,
+            project_name=str(cfg["project"]["name"]),
+            settings=cfg["data"].get("latest_mirror", {}),
+        )
+        self.latest_mirror.sync_all(self.db, status="running")
 
     def run(self) -> Path:
         population = self.engine.initial_population()
@@ -79,6 +87,7 @@ class TrainingCoordinator:
                     self.engine.get_rng_state(),
                 )
                 self.db.add_checkpoint(self.run_id, generation_index, checkpoint)
+                self.latest_mirror.sync_all(self.db, status="running")
                 print(
                     f"[generation {generation_index:04d}] best={metrics['best']:.6f} "
                     f"mean={metrics['mean']:.6f} success={metrics['success_rate']:.3f}"
@@ -93,6 +102,7 @@ class TrainingCoordinator:
         finally:
             self.db.finish_run(self.run_id, run_status)
             export_csv_files(self.db, self.run_id, self.csv_dir)
+            self.latest_mirror.sync_all(self.db, status=run_status)
             self.db.close()
 
     def _evaluate_generation(
@@ -129,6 +139,7 @@ class TrainingCoordinator:
                             int(row["step_index"]),
                             int(row.get("camera_frame_index", row["step_index"])),
                         )
+                        self.latest_mirror.sync_database(self.db)
                     if (
                         self.cfg["data"]["execution_mode"] == "integrity"
                         and self.cfg["data"]["integrity"]["store_steps_in_database"]

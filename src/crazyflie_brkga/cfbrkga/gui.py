@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import copy
 import json
 import os
 import subprocess
@@ -7,353 +8,452 @@ import sys
 import tkinter as tk
 from pathlib import Path
 from tkinter import filedialog, messagebox, ttk
+from typing import Any
 
-from .config import DEFAULT_CONFIG_PATH, PROJECT_ROOT, load_config, save_config, validate_config
+from .config import DEFAULT_CONFIG_PATH, PROJECT_ROOT, config_summary, load_config, save_config, validate_config
+from .process_manager import ProcessManager
+from .runtime_files import SCENARIO_COMMAND, write_command
+from .scenario_builder import ScenarioBuilderPanel
 
 
 class TrainingGui:
     def __init__(self, root: tk.Tk) -> None:
         self.root = root
         self.root.title("Crazyflie Isaac BRKGA")
-        self.root.geometry("1180x920")
-        self.config_path = DEFAULT_CONFIG_PATH
+        self.root.geometry("1480x940")
+        self.root.minsize(1120, 760)
+        self.config_path = DEFAULT_CONFIG_PATH.resolve()
         self.cfg = load_config(self.config_path)
         self.vars: dict[str, tk.Variable] = {}
         self.status = tk.StringVar(value="Ready")
+        self.path_var = tk.StringVar(value=str(self.config_path))
+        self.dirty = False
+        self.process_manager = ProcessManager(PROJECT_ROOT, self._append_log, self.status.set)
         self._build()
         self._load_to_form()
+        self.root.after(100, self._poll_processes)
+        self.root.protocol("WM_DELETE_WINDOW", self._close)
 
+    # ------------------------ UI build ------------------------
     def _build(self) -> None:
+        self._configure_styles()
         top = ttk.Frame(self.root, padding=8)
         top.pack(fill="x")
-        ttk.Label(top, text="Configuration:").pack(side="left")
-        self.path_var = tk.StringVar(value=str(self.config_path))
+        ttk.Label(top, text="Current configuration:").pack(side="left")
         ttk.Entry(top, textvariable=self.path_var).pack(side="left", fill="x", expand=True, padx=6)
         ttk.Button(top, text="Open", command=self.open_config).pack(side="left", padx=2)
-        ttk.Button(top, text="Save as", command=self.save_as).pack(side="left", padx=2)
+        ttk.Button(top, text="Save", command=self.save_current).pack(side="left", padx=2)
+        ttk.Button(top, text="Save As", command=self.save_as).pack(side="left", padx=2)
 
         self.notebook = ttk.Notebook(self.root)
         self.notebook.pack(fill="both", expand=True, padx=8, pady=4)
-        self.tabs = {name: ttk.Frame(self.notebook, padding=10) for name in [
-            "Project", "Environment", "Camera & Vision", "BRKGA", "Mission", "Data"
-        ]}
-        for name, frame in self.tabs.items():
-            self.notebook.add(frame, text=name)
 
-        self._project_tab()
-        self._environment_tab()
-        self._camera_tab()
-        self._brkga_tab()
-        self._mission_tab()
-        self._data_tab()
+        scenario_tab = ttk.Frame(self.notebook)
+        training_tab = ttk.Frame(self.notebook, padding=10)
+        data_tab = ttk.Frame(self.notebook, padding=10)
+        tools_tab = ttk.Frame(self.notebook, padding=10)
+        self.notebook.add(scenario_tab, text="Scenario builder")
+        self.notebook.add(training_tab, text="Training configuration")
+        self.notebook.add(data_tab, text="Data and outputs")
+        self.notebook.add(tools_tab, text="Tools and logs")
+
+        self.scenario_builder = ScenarioBuilderPanel(scenario_tab, PROJECT_ROOT, on_changed=self._mark_dirty)
+        self.scenario_builder.pack(fill="both", expand=True)
+        self._build_training_tab(training_tab)
+        self._build_data_tab(data_tab)
+        self._build_tools_tab(tools_tab)
 
         bottom = ttk.Frame(self.root, padding=8)
         bottom.pack(fill="x")
+        ttk.Button(bottom, text="Save current JSON", command=self.save_current).pack(side="left", padx=3)
         ttk.Button(bottom, text="Validate", command=self.validate).pack(side="left", padx=3)
-        ttk.Button(bottom, text="Run mock integrity test", command=self.run_mock).pack(side="left", padx=3)
-        ttk.Button(bottom, text="Start Isaac training", command=self.run_isaac).pack(side="left", padx=3)
+        ttk.Button(bottom, text="Update scenario", command=self.update_scenario, style="Accent.TButton").pack(side="left", padx=3)
+        ttk.Button(bottom, text="RUN TRAINING", command=self.run_training, style="Run.TButton").pack(side="left", padx=8)
+        ttk.Button(bottom, text="Landmark detector", command=self.open_detector).pack(side="left", padx=3)
         ttk.Button(bottom, text="Open dashboard", command=self.open_dashboard).pack(side="left", padx=3)
-        ttk.Button(bottom, text="Open outputs", command=self.open_outputs).pack(side="left", padx=3)
         ttk.Label(bottom, textvariable=self.status).pack(side="right")
 
-    def _field(self, parent, row, label, key, kind="str", width=18, values=None):
-        ttk.Label(parent, text=label).grid(row=row, column=0, sticky="w", padx=4, pady=4)
-        var_cls = {"int": tk.IntVar, "float": tk.DoubleVar, "bool": tk.BooleanVar}.get(kind, tk.StringVar)
-        var = var_cls()
-        self.vars[key] = var
-        if kind == "bool":
-            widget = ttk.Checkbutton(parent, variable=var)
-        elif values:
-            widget = ttk.Combobox(parent, textvariable=var, values=values, state="readonly", width=width)
-        else:
-            widget = ttk.Entry(parent, textvariable=var, width=width)
-        widget.grid(row=row, column=1, sticky="ew", padx=4, pady=4)
+    def _configure_styles(self) -> None:
+        style = ttk.Style(self.root)
+        try:
+            style.configure("Run.TButton", font=("Segoe UI", 10, "bold"), padding=(12, 6))
+            style.configure("Accent.TButton", font=("Segoe UI", 10, "bold"), padding=(10, 6))
+        except tk.TclError:
+            pass
+
+    def _build_training_tab(self, tab: ttk.Frame) -> None:
+        tab.columnconfigure(0, weight=1)
+        tab.columnconfigure(1, weight=1)
+        project = ttk.LabelFrame(tab, text="Project and Isaac", padding=8)
+        brkga = ttk.LabelFrame(tab, text="BRKGA and policy", padding=8)
+        mission = ttk.LabelFrame(tab, text="Mission and reward", padding=8)
+        project.grid(row=0, column=0, sticky="nsew", padx=(0, 6), pady=(0, 6))
+        brkga.grid(row=0, column=1, sticky="nsew", padx=(6, 0), pady=(0, 6))
+        mission.grid(row=1, column=0, columnspan=2, sticky="nsew", pady=(6, 0))
+
+        row = 0
+        row = self._field(project, row, "Project name", "project.name")
+        row = self._field(project, row, "Description / note", "project.note")
+        row = self._field(project, row, "Headless Isaac", "app.headless", "bool")
+        row = self._field(project, row, "Window width", "app.width", "int")
+        row = self._field(project, row, "Window height", "app.height", "int")
+        row = self._field(project, row, "Renderer", "app.renderer", values=("RayTracedLighting", "RealTimePathTracing"))
+        row = self._field(project, row, "Parallel environments", "environment.num_parallel_envs", "int")
+
+        row = 0
+        row = self._field(brkga, row, "Population size", "brkga.population_size", "int")
+        row = self._field(brkga, row, "Generations", "brkga.generations", "int")
+        row = self._field(brkga, row, "Elite fraction", "brkga.elite_fraction", "float")
+        row = self._field(brkga, row, "Mutant fraction", "brkga.mutant_fraction", "float")
+        row = self._field(brkga, row, "Elite inheritance probability", "brkga.elite_inheritance_probability", "float")
+        row = self._field(brkga, row, "Random seed", "brkga.random_seed", "int")
+        row = self._field(brkga, row, "Episode seeds", "brkga.episode_seeds")
+        row = self._field(brkga, row, "Decoder lower bound", "policy.decoder.lower_bound", "float")
+        row = self._field(brkga, row, "Decoder upper bound", "policy.decoder.upper_bound", "float")
+        row = self._field(brkga, row, "Torch device", "policy.device", values=("cuda", "cuda:0", "cpu"))
+        ttk.Label(brkga, text="Fixed baseline network: 2 → 128 → 128 → 5; BRKGA evolves 17,541 values.", foreground="gray", wraplength=520).grid(row=row, column=0, columnspan=2, sticky="w", pady=(8, 0))
+
+        row = 0
+        mission_fields = (
+            ("Control step [s]", "mission.control_step_s", "float"),
+            ("Maximum control steps", "mission.max_steps", "int"),
+            ("Forward speed [m/s]", "mission.actions.forward_speed_m_s", "float"),
+            ("Vertical speed [m/s]", "mission.actions.vertical_speed_m_s", "float"),
+            ("Yaw rate [rad/s]", "mission.actions.yaw_rate_rad_s", "float"),
+            ("Success front ToF [m]", "mission.success_front_tof_m", "float"),
+            ("Lost landmark maximum steps", "mission.lost_landmark_max_steps", "int"),
+            ("Step penalty scale", "mission.reward.step_penalty_scale", "float"),
+            ("Time penalty", "mission.reward.time_penalty", "float"),
+            ("Collision penalty", "mission.reward.collision_penalty", "float"),
+            ("Lost landmark penalty", "mission.reward.lost_landmark_penalty", "float"),
+            ("Timeout penalty", "mission.reward.timeout_penalty", "float"),
+            ("Failure terminal penalty", "mission.reward.failure_terminal_penalty", "float"),
+            ("Success reward", "mission.reward.success_reward", "float"),
+            ("Near-target partial reward", "mission.reward.near_target_partial_reward", "float"),
+            ("Worker error fitness", "mission.reward.worker_error_fitness", "float"),
+        )
+        for index, (label, key, kind) in enumerate(mission_fields):
+            column = 0 if index < 8 else 2
+            local_row = index if index < 8 else index - 8
+            self._field_at(mission, local_row, column, label, key, kind)
+        mission.columnconfigure(1, weight=1)
+        mission.columnconfigure(3, weight=1)
+
+    def _build_data_tab(self, tab: ttk.Frame) -> None:
+        tab.columnconfigure(0, weight=1)
+        general = ttk.LabelFrame(tab, text="Experiment output", padding=8)
+        integrity = ttk.LabelFrame(tab, text="Integrity / debugging retention", padding=8)
+        mirror = ttk.LabelFrame(tab, text="Stable latest-run mirror", padding=8)
+        general.grid(row=0, column=0, sticky="ew", pady=(0, 8))
+        integrity.grid(row=1, column=0, sticky="ew", pady=8)
+        mirror.grid(row=2, column=0, sticky="ew", pady=8)
+        row = 0
+        row = self._field(general, row, "Output root", "data.output_root")
+        row = self._field(general, row, "Execution mode", "data.execution_mode", values=("training", "integrity"))
+        row = self._field(general, row, "Database heartbeat interval [steps]", "data.heartbeat_steps", "int")
+        row = 0
+        row = self._field(integrity, row, "Save raw data", "data.integrity.save_raw_data", "bool")
+        row = self._field(integrity, row, "Save camera frames", "data.integrity.save_frames", "bool")
+        row = self._field(integrity, row, "Frame stride", "data.integrity.frame_stride", "int")
+        row = self._field(integrity, row, "Store every step in SQLite", "data.integrity.store_steps_in_database", "bool")
+        ttk.Label(integrity, text="Normal training should leave raw data and frame storage disabled.", foreground="gray").grid(row=row, column=0, columnspan=2, sticky="w", pady=(8, 0))
+        row = 0
+        row = self._field(mirror, row, "Enabled", "data.latest_mirror.enabled", "bool")
+        row = self._field(mirror, row, "Folder name (blank = last_<project>)", "data.latest_mirror.folder_name")
+        row = self._field(mirror, row, "Database synchronization interval [s]", "data.latest_mirror.database_sync_interval_s", "float")
+        row = self._field(mirror, row, "Copy CSV exports", "data.latest_mirror.copy_csv", "bool")
+        row = self._field(mirror, row, "Copy checkpoints", "data.latest_mirror.copy_checkpoints", "bool")
+        ttk.Label(mirror, text="Keep DBeaver connected to outputs/experiments/last_<project>/run.sqlite.", foreground="gray").grid(row=row, column=0, columnspan=2, sticky="w", pady=(8, 0))
+
+    def _build_tools_tab(self, tab: ttk.Frame) -> None:
+        actions = ttk.LabelFrame(tab, text="Project scripts", padding=8)
+        actions.pack(fill="x", pady=(0, 8))
+        buttons = (
+            ("Run mock integrity", self.run_mock_integrity),
+            ("Run Isaac integrity", self.run_isaac_integrity),
+            ("Start / update scenario preview", self.update_scenario),
+            ("Stop scenario preview", self.stop_scenario),
+            ("Landmark detector configurator", self.open_detector),
+            ("Open dashboard", self.open_dashboard),
+            ("Open output folder", self.open_outputs),
+            ("Open latest database folder", self.open_latest_database_folder),
+        )
+        for index, (label, command) in enumerate(buttons):
+            ttk.Button(actions, text=label, command=command).grid(row=index // 4, column=index % 4, sticky="ew", padx=4, pady=4)
+        for column in range(4):
+            actions.columnconfigure(column, weight=1)
+
+        log_frame = ttk.LabelFrame(tab, text="Process output", padding=6)
+        log_frame.pack(fill="both", expand=True)
+        self.log_text = tk.Text(log_frame, wrap="none", height=28, state="disabled", background="#101010", foreground="#e6e6e6", insertbackground="white")
+        y_scroll = ttk.Scrollbar(log_frame, orient="vertical", command=self.log_text.yview)
+        x_scroll = ttk.Scrollbar(log_frame, orient="horizontal", command=self.log_text.xview)
+        self.log_text.configure(yscrollcommand=y_scroll.set, xscrollcommand=x_scroll.set)
+        self.log_text.grid(row=0, column=0, sticky="nsew")
+        y_scroll.grid(row=0, column=1, sticky="ns")
+        x_scroll.grid(row=1, column=0, sticky="ew")
+        log_frame.rowconfigure(0, weight=1)
+        log_frame.columnconfigure(0, weight=1)
+        ttk.Button(log_frame, text="Clear log", command=self._clear_log).grid(row=2, column=0, sticky="w", pady=(6, 0))
+
+    def _field(self, parent: ttk.Frame, row: int, label: str, key: str, kind: str = "str", values: tuple[str, ...] | None = None) -> int:
+        self._field_at(parent, row, 0, label, key, kind, values)
         parent.columnconfigure(1, weight=1)
-        return widget
+        return row + 1
 
-    def _project_tab(self):
-        tab = self.tabs["Project"]
-        self._field(tab, 0, "Project name", "project.name")
-        self._field(tab, 1, "Note", "project.note")
-        self._field(tab, 2, "Headless Isaac", "app.headless", "bool")
-        self._field(tab, 3, "Window width", "app.width", "int")
-        self._field(tab, 4, "Window height", "app.height", "int")
-        self._field(tab, 5, "Renderer", "app.renderer", values=["RayTracedLighting", "RealTimePathTracing"])
-        self._field(tab, 6, "Parallel environments", "environment.num_parallel_envs", "int")
+    def _field_at(self, parent: ttk.Frame, row: int, column: int, label: str, key: str, kind: str = "str", values: tuple[str, ...] | None = None) -> None:
+        ttk.Label(parent, text=label).grid(row=row, column=column, sticky="w", padx=4, pady=4)
+        cls = {"int": tk.IntVar, "float": tk.DoubleVar, "bool": tk.BooleanVar}.get(kind, tk.StringVar)
+        variable = cls()
+        self.vars[key] = variable
+        variable.trace_add("write", lambda *_args: self._mark_dirty())
+        if kind == "bool":
+            widget = ttk.Checkbutton(parent, variable=variable)
+        elif values:
+            widget = ttk.Combobox(parent, textvariable=variable, values=values, state="readonly")
+        else:
+            widget = ttk.Entry(parent, textvariable=variable)
+        widget.grid(row=row, column=column + 1, sticky="ew", padx=4, pady=4)
 
-    def _environment_tab(self):
-        tab = self.tabs["Environment"]
-        self._field(tab, 0, "Room size X, Y, Z (m)", "environment.room.size_m")
-        self._field(tab, 1, "Environment spacing (m)", "environment.env_spacing_m", "float")
-        self._field(tab, 2, "Crazyflie initial X, Y, Z", "environment.crazyflie.initial_pose.position_m")
-        self._field(tab, 3, "Crazyflie initial yaw (deg)", "environment.crazyflie.initial_pose.yaw_deg", "float")
-        self._field(tab, 4, "Crazyflie USD path (blank = Isaac assets)", "environment.crazyflie.usd_path")
-        self._field(tab, 5, "Landmark X, Y, Z", "environment.landmark.position_m")
-        self._field(tab, 6, "Landmark RGB 0-255", "environment.landmark.rgb_255")
-        self._field(tab, 7, "Landmark radius (m)", "environment.landmark.radius_m", "float")
-        self._field(tab, 8, "Landmark light intensity", "environment.landmark.light_intensity", "float")
+    # ------------------------ config transfer ------------------------
+    def _get(self, dotted: str) -> Any:
+        value: Any = self.cfg
+        for part in dotted.split("."):
+            value = value[part]
+        return value
 
-        obstacle_frame = ttk.LabelFrame(tab, text="Obstacles JSON (box/wall)", padding=6)
-        obstacle_frame.grid(row=9, column=0, columnspan=2, sticky="nsew", padx=4, pady=6)
-        self.obstacles_text = tk.Text(obstacle_frame, height=7, wrap="none")
-        self.obstacles_text.pack(fill="both", expand=True)
+    def _set(self, dotted: str, value: Any) -> None:
+        target = self.cfg
+        parts = dotted.split(".")
+        for part in parts[:-1]:
+            target = target[part]
+        target[parts[-1]] = value
 
-        asset_frame = ttk.LabelFrame(tab, text="Custom USD assets", padding=6)
-        asset_frame.grid(row=10, column=0, columnspan=2, sticky="nsew", padx=4, pady=6)
-        asset_bar = ttk.Frame(asset_frame)
-        asset_bar.pack(fill="x", pady=(0, 4))
-        self.asset_scan_var = tk.StringVar()
-        self.asset_combo = ttk.Combobox(asset_bar, textvariable=self.asset_scan_var, state="readonly")
-        self.asset_combo.pack(side="left", fill="x", expand=True)
-        ttk.Button(asset_bar, text="Rescan assets/", command=self._scan_assets).pack(side="left", padx=3)
-        ttk.Button(asset_bar, text="Add selected", command=self._add_scanned_asset).pack(side="left", padx=3)
-        self.custom_assets_text = tk.Text(asset_frame, height=8, wrap="none")
-        self.custom_assets_text.pack(fill="both", expand=True)
-        ttk.Label(
-            asset_frame,
-            text="Optional collision_aabb_size_m lets the baseline range/collision model include imported geometry.",
-        ).pack(anchor="w", pady=(4, 0))
-        tab.rowconfigure(9, weight=1)
-        tab.rowconfigure(10, weight=1)
-        self._scan_assets()
-
-    def _camera_tab(self):
-        tab = self.tabs["Camera & Vision"]
-        self._field(tab, 0, "Camera width", "camera.width", "int")
-        self._field(tab, 1, "Camera height", "camera.height", "int")
-        self._field(tab, 2, "Horizontal FOV (deg, mock projection)", "camera.horizontal_fov_deg", "float")
-        self._field(tab, 3, "Focal length (mm)", "camera.focal_length_mm", "float")
-        self._field(tab, 4, "Camera local X, Y, Z", "camera.local_position_m")
-        self._field(tab, 5, "HSV lower", "vision.hsv_lower")
-        self._field(tab, 6, "HSV upper", "vision.hsv_upper")
-        self._field(tab, 7, "Minimum blob area (px)", "vision.min_area_px", "float")
-        self._field(tab, 8, "Minimum circularity", "vision.min_circularity", "float")
-        self._field(tab, 9, "Morphology kernel", "vision.morphology_kernel", "int")
-
-    def _brkga_tab(self):
-        tab = self.tabs["BRKGA"]
-        self._field(tab, 0, "Population size", "brkga.population_size", "int")
-        self._field(tab, 1, "Generations", "brkga.generations", "int")
-        self._field(tab, 2, "Elite fraction", "brkga.elite_fraction", "float")
-        self._field(tab, 3, "Mutant fraction", "brkga.mutant_fraction", "float")
-        self._field(tab, 4, "Elite inheritance probability", "brkga.elite_inheritance_probability", "float")
-        self._field(tab, 5, "Random seed", "brkga.random_seed", "int")
-        self._field(tab, 6, "Episode seeds", "brkga.episode_seeds")
-        self._field(tab, 7, "Weight lower bound", "policy.decoder.lower_bound", "float")
-        self._field(tab, 8, "Weight upper bound", "policy.decoder.upper_bound", "float")
-        self._field(tab, 9, "Torch device", "policy.device", values=["cuda", "cuda:0", "cpu"])
-        ttk.Label(tab, text="Fixed baseline network: 2 → 128 → 128 → 5 (17,541 evolved values).").grid(row=10, column=0, columnspan=2, sticky="w", pady=10)
-
-    def _mission_tab(self):
-        tab = self.tabs["Mission"]
-        self._field(tab, 0, "Control step (s)", "mission.control_step_s", "float")
-        self._field(tab, 1, "Maximum steps", "mission.max_steps", "int")
-        self._field(tab, 2, "Forward speed (m/s)", "mission.actions.forward_speed_m_s", "float")
-        self._field(tab, 3, "Vertical speed (m/s)", "mission.actions.vertical_speed_m_s", "float")
-        self._field(tab, 4, "Yaw rate (rad/s)", "mission.actions.yaw_rate_rad_s", "float")
-        self._field(tab, 5, "Success front ToF (m)", "mission.success_front_tof_m", "float")
-        self._field(tab, 6, "Lost landmark max steps", "mission.lost_landmark_max_steps", "int")
-        self._field(tab, 7, "Range sensor backend", "environment.sensors.range_backend", values=["physx_raycast", "analytic"])
-        self._field(tab, 8, "Horizontal collision threshold", "environment.sensors.horizontal_collision_threshold_m", "float")
-        self._field(tab, 9, "Success reward", "mission.reward.success_reward", "float")
-        self._field(tab, 10, "Collision penalty", "mission.reward.collision_penalty", "float")
-
-    def _data_tab(self):
-        tab = self.tabs["Data"]
-        self._field(tab, 0, "Output root", "data.output_root")
-        self._field(tab, 1, "Execution mode", "data.execution_mode", values=["training", "integrity"])
-        self._field(tab, 2, "Save raw integrity data", "data.integrity.save_raw_data", "bool")
-        self._field(tab, 3, "Save integrity frames", "data.integrity.save_frames", "bool")
-        self._field(tab, 4, "Frame stride", "data.integrity.frame_stride", "int")
-        self._field(tab, 5, "Store integrity steps in SQLite", "data.integrity.store_steps_in_database", "bool")
-        self._field(tab, 6, "Database heartbeat interval (steps)", "data.heartbeat_steps", "int")
-        ttk.Label(tab, text="SQLite is authoritative. CSV files are regenerated after every generation.").grid(row=7, column=0, columnspan=2, sticky="w", pady=10)
-
-    def _load_to_form(self):
-        for key, var in self.vars.items():
+    def _load_to_form(self) -> None:
+        self.scenario_builder.load_from_config(self.cfg)
+        for key, variable in self.vars.items():
             value = self._get(key)
             if isinstance(value, list):
-                value = ", ".join(str(v) for v in value)
-            var.set(value)
-        if hasattr(self, "obstacles_text"):
-            self.obstacles_text.delete("1.0", "end")
-            self.obstacles_text.insert("1.0", json.dumps(self.cfg["environment"].get("obstacles", []), indent=2))
-        if hasattr(self, "custom_assets_text"):
-            self.custom_assets_text.delete("1.0", "end")
-            self.custom_assets_text.insert("1.0", json.dumps(self.cfg["environment"].get("custom_assets", []), indent=2))
+                value = ", ".join(str(item) for item in value)
+            variable.set(value)
+        self.dirty = False
+        self._update_title()
+        self.status.set(config_summary(self.cfg))
 
-    def _collect(self):
-        for key, var in self.vars.items():
-            value = var.get()
+    def _collect(self) -> None:
+        self.scenario_builder.apply_to_config(self.cfg)
+        for key, variable in self.vars.items():
+            value = variable.get()
             original = self._get(key)
             if isinstance(original, list):
-                parts = [part.strip() for part in str(value).split(",") if part.strip()]
+                parts = [part.strip() for part in str(value).replace(";", ",").split(",") if part.strip()]
                 if original and isinstance(original[0], int):
                     value = [int(part) for part in parts]
                 else:
                     value = [float(part) for part in parts]
             self._set(key, value)
-        if hasattr(self, "obstacles_text"):
-            self.cfg["environment"]["obstacles"] = json.loads(self.obstacles_text.get("1.0", "end").strip() or "[]")
-        if hasattr(self, "custom_assets_text"):
-            self.cfg["environment"]["custom_assets"] = json.loads(self.custom_assets_text.get("1.0", "end").strip() or "[]")
         validate_config(self.cfg)
 
-    def _scan_assets(self):
-        extensions = {".usd", ".usda", ".usdc"}
-        assets_root = PROJECT_ROOT / "assets"
-        assets_root.mkdir(parents=True, exist_ok=True)
-        values = [
-            str(path.relative_to(PROJECT_ROOT)).replace("\\", "/")
-            for path in sorted(assets_root.rglob("*"))
-            if path.is_file() and path.suffix.lower() in extensions
-        ]
-        if hasattr(self, "asset_combo"):
-            self.asset_combo["values"] = values
-            self.asset_scan_var.set(values[0] if values else "")
+    def _mark_dirty(self) -> None:
+        self.dirty = True
+        self._update_title()
 
-    def _add_scanned_asset(self):
-        selected = self.asset_scan_var.get().strip()
-        if not selected:
-            messagebox.showwarning("No USD asset", "Place a .usd, .usda or .usdc file under assets/ and rescan.")
+    def _update_title(self) -> None:
+        marker = " *" if self.dirty else ""
+        self.root.title(f"Crazyflie Isaac BRKGA - {self.config_path.name}{marker}")
+
+    # ------------------------ file actions ------------------------
+    def open_config(self) -> None:
+        path = filedialog.askopenfilename(parent=self.root, initialdir=str(PROJECT_ROOT / "config"), filetypes=[("JSON", "*.json"), ("All files", "*.*")])
+        if not path:
             return
         try:
-            items = json.loads(self.custom_assets_text.get("1.0", "end").strip() or "[]")
-            if not isinstance(items, list):
-                raise ValueError("Custom assets JSON must be a list.")
-            stem = Path(selected).stem
-            items.append({
-                "name": stem,
-                "enabled": True,
-                "usd_path": selected,
-                "position_m": [0.0, 0.0, 0.0],
-                "rotation_deg": [0.0, 0.0, 0.0],
-                "scale": [1.0, 1.0, 1.0],
-                "collision_aabb_size_m": None,
-            })
-            self.custom_assets_text.delete("1.0", "end")
-            self.custom_assets_text.insert("1.0", json.dumps(items, indent=2))
-        except Exception as exc:
-            messagebox.showerror("Cannot add asset", str(exc))
-
-    def _get(self, dotted):
-        value = self.cfg
-        for part in dotted.split("."):
-            value = value[part]
-        return value
-
-    def _set(self, dotted, new_value):
-        target = self.cfg
-        parts = dotted.split(".")
-        for part in parts[:-1]:
-            target = target[part]
-        target[parts[-1]] = new_value
-
-    def open_config(self):
-        path = filedialog.askopenfilename(filetypes=[("JSON", "*.json"), ("All files", "*.*")])
-        if path:
-            self.config_path = Path(path)
-            self.cfg = load_config(path)
-            self.path_var.set(path)
+            self.config_path = Path(path).resolve()
+            self.cfg = load_config(self.config_path)
+            self.path_var.set(str(self.config_path))
             self._load_to_form()
-            self.status.set("Configuration loaded")
+        except Exception as exc:
+            messagebox.showerror("Open failed", str(exc), parent=self.root)
 
-    def save_as(self):
+    def save_current(self) -> Path | None:
         try:
             self._collect()
-            path = filedialog.asksaveasfilename(defaultextension=".json", filetypes=[("JSON", "*.json")])
-            if path:
-                self.config_path = save_config(self.cfg, path)
-                self.path_var.set(str(self.config_path))
-                self.status.set("Configuration saved")
+            entered = Path(self.path_var.get()).expanduser()
+            if not entered.is_absolute():
+                entered = PROJECT_ROOT / entered
+            self.config_path = save_config(self.cfg, entered)
+            self.path_var.set(str(self.config_path))
+            self.dirty = False
+            self._update_title()
+            self.status.set(f"Saved {self.config_path}")
+            return self.config_path
         except Exception as exc:
-            messagebox.showerror("Save failed", str(exc))
+            messagebox.showerror("Save failed", str(exc), parent=self.root)
+            return None
 
-    def _save_current(self):
-        self._collect()
-        self.config_path = save_config(self.cfg, self.path_var.get())
-        return self.config_path
+    def save_as(self) -> None:
+        path = filedialog.asksaveasfilename(parent=self.root, initialdir=str(PROJECT_ROOT / "config"), defaultextension=".json", filetypes=[("JSON", "*.json")])
+        if not path:
+            return
+        self.path_var.set(path)
+        self.config_path = Path(path).resolve()
+        self.save_current()
 
-    def validate(self):
-        try:
-            self._save_current()
-            pop = int(self.cfg["brkga"]["population_size"])
-            genes = 17541
-            estimated_gib = pop * int(self.cfg["brkga"]["generations"]) * genes * 8 / 1024**3
-            messagebox.showinfo("Valid", f"Configuration is valid.\nApproximate uncompressed chromosome+weight data: {estimated_gib:.2f} GiB")
-            self.status.set("Valid")
-        except Exception as exc:
-            messagebox.showerror("Invalid configuration", str(exc))
+    def validate(self) -> None:
+        path = self.save_current()
+        if path is None:
+            return
+        pop = int(self.cfg["brkga"]["population_size"])
+        generations = int(self.cfg["brkga"]["generations"])
+        waves = (pop + int(self.cfg["environment"]["num_parallel_envs"]) - 1) // int(self.cfg["environment"]["num_parallel_envs"])
+        messagebox.showinfo("Configuration valid", f"{config_summary(self.cfg)}\nEvaluation waves per generation: {waves}\nTotal individual evaluations: {pop * generations * len(self.cfg['brkga']['episode_seeds'])}", parent=self.root)
 
-    def _launch(self, script_name):
-        path = self._save_current()
-        env = os.environ.copy()
-        env["CRAZYFLIE_BRKGA_CONFIG"] = str(path)
-        process = subprocess.Popen([sys.executable, str(PROJECT_ROOT / script_name)], cwd=PROJECT_ROOT, env=env)
-        self.status.set(f"Started PID {process.pid}")
+    # ------------------------ launch helpers ------------------------
+    def _bat_command(self, filename: str) -> list[str]:
+        path = PROJECT_ROOT / filename
+        if os.name == "nt":
+            return ["cmd", "/c", str(path)]
+        raise RuntimeError(f"{filename} is a Windows launcher. Run the corresponding Python script manually on this platform.")
 
-    def run_mock(self):
-        try:
-            self._collect()
-            smoke_cfg = json.loads(json.dumps(self.cfg))
-            smoke_cfg["project"]["name"] = f"{self.cfg['project']['name']}_smoke"
-            smoke_cfg["project"]["note"] = "GUI-generated software-only integrity smoke test."
-            smoke_cfg["environment"]["num_parallel_envs"] = min(2, int(self.cfg["environment"]["num_parallel_envs"]))
-            smoke_cfg["brkga"]["population_size"] = 4
-            smoke_cfg["brkga"]["generations"] = 1
-            smoke_cfg["brkga"]["episode_seeds"] = [int(self.cfg["brkga"]["episode_seeds"][0])]
-            smoke_cfg["mission"]["max_steps"] = min(20, int(self.cfg["mission"]["max_steps"]))
-            smoke_cfg["mission"]["lost_landmark_max_steps"] = smoke_cfg["mission"]["max_steps"]
-            smoke_cfg["data"]["execution_mode"] = "integrity"
-            smoke_cfg["data"]["integrity"]["save_raw_data"] = True
-            smoke_cfg["data"]["integrity"]["save_frames"] = True
-            smoke_cfg["data"]["integrity"]["frame_stride"] = 5
-            smoke_cfg["data"]["integrity"]["store_steps_in_database"] = True
-            smoke_path = PROJECT_ROOT / "config" / "_gui_smoke.json"
-            save_config(smoke_cfg, smoke_path)
-            env = os.environ.copy()
-            env["CRAZYFLIE_BRKGA_CONFIG"] = str(smoke_path)
-            process = subprocess.Popen(
-                [sys.executable, str(PROJECT_ROOT / "train_mock.py")],
-                cwd=PROJECT_ROOT,
-                env=env,
-            )
-            self.status.set(f"Started mock integrity PID {process.pid}")
-        except Exception as exc:
-            messagebox.showerror("Mock launch failed", str(exc))
+    def _launch(self, name: str, command: list[str], config_path: Path | None = None) -> None:
+        env: dict[str, str] = {}
+        if config_path is not None:
+            env["CRAZYFLIE_BRKGA_CONFIG"] = str(config_path)
+        self.process_manager.start(name, command, env)
 
-    def run_isaac(self):
-        try:
-            path = self._save_current()
-            env = os.environ.copy()
-            env["CRAZYFLIE_BRKGA_CONFIG"] = str(path)
-            bat = PROJECT_ROOT / "run_training.bat"
-            if os.name == "nt" and bat.exists():
-                process = subprocess.Popen(["cmd", "/c", str(bat)], cwd=PROJECT_ROOT, env=env)
+    def run_training(self) -> None:
+        path = self.save_current()
+        if path is None:
+            return
+        if self.cfg["data"]["execution_mode"] != "training":
+            answer = messagebox.askyesno("Execution mode", "The current JSON is in integrity mode. Change it to training and save before starting?", parent=self.root)
+            if answer:
+                self.cfg["data"]["execution_mode"] = "training"
+                self.vars["data.execution_mode"].set("training")
+                path = self.save_current()
             else:
-                process = subprocess.Popen([sys.executable, str(PROJECT_ROOT / "train_isaac.py")], cwd=PROJECT_ROOT, env=env)
-            self.status.set(f"Started Isaac PID {process.pid}")
+                return
+        try:
+            self._launch("training", self._bat_command("run_training.bat"), path)
         except Exception as exc:
-            messagebox.showerror("Isaac launch failed", str(exc))
+            messagebox.showerror("Training launch failed", str(exc), parent=self.root)
 
-    def open_dashboard(self):
+    def run_isaac_integrity(self) -> None:
+        try:
+            self._collect()
+            integrity = copy.deepcopy(self.cfg)
+            integrity["project"]["name"] = f"{self.cfg['project']['name']}_integrity"
+            integrity["project"]["note"] = "GUI-generated Isaac integrity run using the current scenario."
+            integrity["data"]["execution_mode"] = "integrity"
+            integrity["data"]["integrity"]["save_raw_data"] = True
+            integrity["data"]["integrity"]["save_frames"] = True
+            integrity["data"]["integrity"]["store_steps_in_database"] = True
+            path = save_config(integrity, PROJECT_ROOT / "config" / "_gui_isaac_integrity.json")
+            self._launch("isaac_integrity", self._bat_command("run_training.bat"), path)
+        except Exception as exc:
+            messagebox.showerror("Isaac integrity launch failed", str(exc), parent=self.root)
+
+    def run_mock_integrity(self) -> None:
+        try:
+            self._collect()
+            smoke = copy.deepcopy(self.cfg)
+            smoke["project"]["name"] = f"{self.cfg['project']['name']}_mock"
+            smoke["environment"]["num_parallel_envs"] = min(2, int(smoke["environment"]["num_parallel_envs"]))
+            smoke["brkga"]["population_size"] = 4
+            smoke["brkga"]["generations"] = 1
+            smoke["mission"]["max_steps"] = min(20, int(smoke["mission"]["max_steps"]))
+            smoke["mission"]["lost_landmark_max_steps"] = smoke["mission"]["max_steps"]
+            smoke["data"]["execution_mode"] = "integrity"
+            smoke["data"]["integrity"].update({"save_raw_data": True, "save_frames": True, "frame_stride": 5, "store_steps_in_database": True})
+            path = save_config(smoke, PROJECT_ROOT / "config" / "_gui_mock_integrity.json")
+            self._launch("mock_integrity", [sys.executable, str(PROJECT_ROOT / "train_mock.py")], path)
+        except Exception as exc:
+            messagebox.showerror("Mock integrity launch failed", str(exc), parent=self.root)
+
+    def update_scenario(self) -> None:
+        path = self.save_current()
+        if path is None:
+            return
+        try:
+            revision = write_command(SCENARIO_COMMAND, "reload", path)
+            if not self.process_manager.is_running("scenario_preview"):
+                self._launch("scenario_preview", self._bat_command("run_scenario_preview.bat"), path)
+                self.status.set(f"Scenario preview starting; revision {revision}")
+            else:
+                self.status.set(f"Scenario update sent; revision {revision}")
+        except Exception as exc:
+            messagebox.showerror("Scenario preview failed", str(exc), parent=self.root)
+
+    def stop_scenario(self) -> None:
+        write_command(SCENARIO_COMMAND, "stop", self.config_path)
+        self.status.set("Scenario preview stop requested")
+
+    def open_detector(self) -> None:
+        path = self.save_current()
+        if path is None:
+            return
+        try:
+            self._launch("detector_configurator", [sys.executable, str(PROJECT_ROOT / "landmark_detector_configurator.py")], path)
+        except Exception as exc:
+            messagebox.showerror("Detector configurator failed", str(exc), parent=self.root)
+
+    def open_dashboard(self) -> None:
         try:
             output_root = (PROJECT_ROOT / self.cfg["data"]["output_root"]).resolve()
-            databases = sorted(output_root.glob("*/run.sqlite"), key=lambda p: p.stat().st_mtime, reverse=True)
-            env = os.environ.copy()
+            databases = sorted(output_root.glob("*/run.sqlite"), key=lambda item: (not item.parent.name.startswith("last_"), -item.stat().st_mtime))
+            env: dict[str, str] = {}
             if databases:
                 env["CRAZYFLIE_BRKGA_DB"] = str(databases[0])
-            subprocess.Popen([sys.executable, "-m", "streamlit", "run", str(PROJECT_ROOT / "dashboard" / "app.py")], cwd=PROJECT_ROOT, env=env)
+            self.process_manager.start("dashboard", [sys.executable, "-m", "streamlit", "run", str(PROJECT_ROOT / "dashboard" / "app.py")], env)
         except Exception as exc:
-            messagebox.showerror("Dashboard failed", "Install dashboard requirements first.\n\n" + str(exc))
+            messagebox.showerror("Dashboard failed", "Install requirements-dashboard.txt first.\n\n" + str(exc), parent=self.root)
 
-    def open_outputs(self):
+    def open_outputs(self) -> None:
         path = (PROJECT_ROOT / self.cfg["data"]["output_root"]).resolve()
         path.mkdir(parents=True, exist_ok=True)
+        self._open_path(path)
+
+    def open_latest_database_folder(self) -> None:
+        path = (PROJECT_ROOT / self.cfg["data"]["output_root"]).resolve()
+        candidates = sorted(path.glob("last_*/run.sqlite"), key=lambda item: item.stat().st_mtime, reverse=True)
+        self._open_path(candidates[0].parent if candidates else path)
+
+    @staticmethod
+    def _open_path(path: Path) -> None:
         if os.name == "nt":
             os.startfile(path)
         else:
             subprocess.Popen(["xdg-open", str(path)])
+
+    # ------------------------ logs and shutdown ------------------------
+    def _append_log(self, text: str) -> None:
+        self.log_text.configure(state="normal")
+        self.log_text.insert("end", text)
+        self.log_text.see("end")
+        self.log_text.configure(state="disabled")
+
+    def _clear_log(self) -> None:
+        self.log_text.configure(state="normal")
+        self.log_text.delete("1.0", "end")
+        self.log_text.configure(state="disabled")
+
+    def _poll_processes(self) -> None:
+        self.process_manager.drain()
+        self.root.after(100, self._poll_processes)
+
+    def _close(self) -> None:
+        if self.dirty:
+            answer = messagebox.askyesnocancel("Unsaved configuration", "Save current changes before closing?", parent=self.root)
+            if answer is None:
+                return
+            if answer and self.save_current() is None:
+                return
+        # Do not kill training or dashboard. Only request preview workers to stop.
+        try:
+            write_command(SCENARIO_COMMAND, "stop", self.config_path)
+        except Exception:
+            pass
+        self.root.destroy()
 
 
 def run_gui() -> None:

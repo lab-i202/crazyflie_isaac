@@ -1,47 +1,58 @@
 crazyflie_isaac_brkga/
-PROJECT_TREE.txt
-README.md
-VALIDATION.md
-assets
-    robots
-        crazyflie
-            README.md
-cfbrkga
-    __init__.py
-    brkga.py
-    checkpoint.py
-    config.py
-    csv_export.py
-    database.py
-    debug_recorder.py
-    geometry.py
-    gui.py
-    image_processing.py
-    isaac_backend.py
-    mock_evaluator.py
-    model.py
-    reward.py
-    training_loop.py
-    types.py
-config
-    default.json
-    isaac_integrity.json
-    smoke.json
-dashboard
-    app.py
-database_schema.sql
-main.py
-pytest.ini
-requirements-core.txt
-requirements-dashboard.txt
-run_dashboard.bat
-run_gui.bat
-run_isaac_integrity.bat
-run_mock_test.bat
-run_training.bat
-tests
-    test_core.py
-    test_database.py
-    test_mock_smoke.py
-train_isaac.py
-train_mock.py
+  GUI_AND_DETECTOR.md
+  PATCH_LATEST_MIRROR.md
+  PATCH_NOTES.md
+  PROJECT_TREE.txt
+  README.md
+  VALIDATION.md
+  cfbrkga/__init__.py
+  cfbrkga/brkga.py
+  cfbrkga/checkpoint.py
+  cfbrkga/config.py
+  cfbrkga/csv_export.py
+  cfbrkga/database.py
+  cfbrkga/debug_recorder.py
+  cfbrkga/detector_gui.py
+  cfbrkga/geometry.py
+  cfbrkga/gui.py
+  cfbrkga/gui_widgets.py
+  cfbrkga/image_processing.py
+  cfbrkga/isaac_backend.py
+  cfbrkga/latest_run.py
+  cfbrkga/mock_evaluator.py
+  cfbrkga/model.py
+  cfbrkga/process_manager.py
+  cfbrkga/reward.py
+  cfbrkga/runtime_compat.py
+  cfbrkga/runtime_files.py
+  cfbrkga/scenario_builder.py
+  cfbrkga/training_loop.py
+  cfbrkga/types.py
+  config/default.json
+  config/isaac_integrity.json
+  config/smoke.json
+  dashboard/app.py
+  database_schema.sql
+  detector_capture_isaac.py
+  landmark_detector_configurator.py
+  main.py
+  pytest.ini
+  repair_isaac_environment.bat
+  requirements-core.txt
+  requirements-dashboard.txt
+  run_dashboard.bat
+  run_detector_capture.bat
+  run_detector_configurator.bat
+  run_gui.bat
+  run_isaac_integrity.bat
+  run_mock_test.bat
+  run_scenario_preview.bat
+  run_training.bat
+  scenario_preview_isaac.py
+  tests/test_core.py
+  tests/test_database.py
+  tests/test_gui_config_and_detector.py
+  tests/test_mock_smoke.py
+  train_isaac.py
+  train_mock.py
+  verify_isaac_environment.py

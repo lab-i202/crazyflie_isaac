@@ -155,6 +155,7 @@ CREATE TABLE IF NOT EXISTS agent_state_events (
     env_index INTEGER NOT NULL,
     previous_state TEXT,
     new_state TEXT NOT NULL,
+    current_state TEXT NOT NULL,
     reason TEXT,
     simulation_step INTEGER,
     created_at TEXT NOT NULL
@@ -232,10 +233,38 @@ class ExperimentDatabase:
         self._conn.execute("PRAGMA synchronous=NORMAL")
         self._conn.execute("PRAGMA busy_timeout=60000")
         self._conn.executescript(SCHEMA)
+        self._migrate_schema()
         row = self._conn.execute("SELECT COUNT(*) AS n FROM schema_info").fetchone()
         if row["n"] == 0:
-            self._conn.execute("INSERT INTO schema_info(schema_version, created_at) VALUES (?, ?)", (1, utc_now()))
+            self._conn.execute("INSERT INTO schema_info(schema_version, created_at) VALUES (?, ?)", (2, utc_now()))
+        else:
+            self._conn.execute("UPDATE schema_info SET schema_version=2")
         self._conn.commit()
+
+    def _migrate_schema(self) -> None:
+        columns = {
+            str(row["name"])
+            for row in self._conn.execute("PRAGMA table_info(agent_state_events)").fetchall()
+        }
+        if "current_state" not in columns:
+            self._conn.execute("ALTER TABLE agent_state_events ADD COLUMN current_state TEXT")
+        self._conn.execute(
+            "UPDATE agent_state_events SET current_state=new_state WHERE current_state IS NULL OR current_state=''"
+        )
+
+    def backup_to(self, destination_path: str | Path) -> Path:
+        destination = Path(destination_path).resolve()
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        with self._lock:
+            self._conn.commit()
+            mirror = sqlite3.connect(destination, timeout=60.0)
+            try:
+                mirror.execute("PRAGMA busy_timeout=60000")
+                self._conn.backup(mirror)
+                mirror.commit()
+            finally:
+                mirror.close()
+        return destination
 
     def close(self) -> None:
         with self._lock:
@@ -355,10 +384,10 @@ class ExperimentDatabase:
             if previous_state != state:
                 self._conn.execute(
                     """INSERT INTO agent_state_events(run_id, evaluation_id, individual_id, env_index,
-                       previous_state, new_state, reason, simulation_step, created_at)
-                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                       previous_state, new_state, current_state, reason, simulation_step, created_at)
+                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                     (
-                        run_id, evaluation_id, individual_id, env_index, previous_state, state,
+                        run_id, evaluation_id, individual_id, env_index, previous_state, state, state,
                         message, simulation_step, utc_now(),
                     ),
                 )

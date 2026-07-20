@@ -29,7 +29,7 @@ EXPORTS = {
         ON best.generation_index=i.generation_index AND best.best_fitness=i.fitness
         WHERE i.run_id=? GROUP BY i.generation_index ORDER BY i.generation_index""",
     "agent_state_events.csv": """SELECT event_id, evaluation_id, individual_id, env_index,
-        previous_state, new_state, reason, simulation_step, created_at
+        previous_state, new_state, current_state, reason, simulation_step, created_at
         FROM agent_state_events WHERE run_id=? ORDER BY event_id""",
     "errors.csv": """SELECT error_id, generation_index, individual_id, env_index, component, message,
         traceback, created_at FROM errors WHERE run_id=? ORDER BY error_id""",

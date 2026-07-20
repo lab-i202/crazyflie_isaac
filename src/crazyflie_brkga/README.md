@@ -372,3 +372,27 @@ run_isaac_integrity.bat
 
 The integrity launcher now checks NumPy, OpenCV, PyTorch, CUDA availability, and the
 CUDA device before opening Isaac Sim. It will refuse to start if NumPy 2.x is present.
+
+## Stable latest-run database
+
+The shared training core maintains `outputs/experiments/last_<project.name>/run.sqlite` as a
+consistent SQLite backup of the active/latest timestamped experiment. Keep DBeaver connected
+to this stable file and refresh instead of creating a new connection for every run.
+
+The dashboard lists stable `last_*` databases first. See `PATCH_LATEST_MIRROR.md` for schema,
+configuration, and retention details.
+
+---
+
+## Unified GUI and detector workflow
+
+The project now includes a full scenario/training GUI, live Isaac scenario reload, and a separate landmark detector configurator. See [`GUI_AND_DETECTOR.md`](GUI_AND_DETECTOR.md) for the complete workflow.
+
+Main commands:
+
+```powershell
+.\run_gui.bat
+.\run_detector_configurator.bat
+```
+
+The GUI edits the same JSON used by integrity tests and normal training. **Save current JSON** overwrites the active file, **Update scenario** rebuilds a visible one-room preview, and **RUN TRAINING** launches the BRKGA session with the active configuration.

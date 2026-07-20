@@ -59,6 +59,7 @@ class IsaacBatchEvaluator:
         self._scene_query = None
         self._carb = None
         self._timeline = None
+        self._preview_camera_path: str | None = None
         self._build_stage()
 
     def close(self) -> None:
@@ -77,6 +78,22 @@ class IsaacBatchEvaluator:
                     slot.render_product.destroy()
                 except Exception:
                     pass
+
+    def prepare_preview(self) -> None:
+        """Place every preview robot at the configured initial pose."""
+        position = self.cfg["environment"]["crazyflie"]["initial_pose"]["position_m"]
+        yaw = math.radians(float(self.cfg["environment"]["crazyflie"]["initial_pose"]["yaw_deg"]))
+        pose = Pose(float(position[0]), float(position[1]), float(position[2]), yaw)
+        for slot in self.slots:
+            slot.pose = pose
+            self._apply_pose(slot, pose)
+        self._render_updates(int(self.cfg["camera"].get("warmup_updates", 8)))
+
+    def capture_preview_frame(self, env_index: int = 0, updates: int = 1) -> np.ndarray | None:
+        if env_index < 0 or env_index >= len(self.slots):
+            raise IndexError(f"Invalid preview environment index {env_index}.")
+        self._render_updates(max(1, int(updates)))
+        return self._camera_image(self.slots[env_index])
 
     def evaluate_batch(
         self,
@@ -302,6 +319,11 @@ class IsaacBatchEvaluator:
             target = Gf.Vec3d(eye[0] + 1.0, eye[1], eye[2])
             matrix = Gf.Matrix4d().SetLookAt(eye, target, Gf.Vec3d(0, 0, 1)).GetInverse()
             cam_xform.AddTransformOp().Set(matrix)
+            local_rotation = [float(v) for v in self.cfg["camera"].get("local_rotation_deg", [0, 0, 0])]
+            if any(abs(value) > 1.0e-9 for value in local_rotation):
+                # Keep the proven look-at transform, then apply an optional local XYZ trim.
+                # Separate xform ops avoid fragile Gf.Rotation composition across Isaac versions.
+                cam_xform.AddRotateXYZOp().Set(Gf.Vec3f(*local_rotation))
             render_product = rep.create.render_product(
                 camera_path, (int(self.cfg["camera"]["width"]), int(self.cfg["camera"]["height"]))
             )
@@ -312,20 +334,16 @@ class IsaacBatchEvaluator:
                 message = str(exc)
                 if "Unable to write from unknown dtype" in message:
                     import numpy as runtime_numpy
-
                     raise RuntimeError(
                         "Isaac Sim could not attach the RGB camera annotator. "
-                        "The installed NumPy version is incompatible with Isaac Sim 5.1's "
-                        "SyntheticData bindings. "
-                        f"Detected NumPy {runtime_numpy.__version__}. "
-                        "Run repair_isaac_environment.bat and retry."
+                        "The installed NumPy version is incompatible with Isaac Sim 5.1's SyntheticData bindings. "
+                        f"Detected NumPy {runtime_numpy.__version__}. Run repair_isaac_environment.bat and retry."
                     ) from exc
                 raise
-            slot = IsaacSlot(
-                env_index, root, rig_path, camera_path, translate_op, rotate_op,
-                annotator, render_product, tuple(float(v) for v in origin)
-            )
-            self.slots.append(slot)
+            self.slots.append(IsaacSlot(env_index, root, rig_path, camera_path, translate_op, rotate_op, annotator, render_product, tuple(float(v) for v in origin)))
+
+        if bool(self.cfg.get("scenario_preview", {}).get("enabled", False)):
+            self._configure_preview_camera(Gf, UsdGeom)
         if self.cfg["environment"]["sensors"].get("range_backend") == "physx_raycast":
             self._timeline.play()
         for _ in range(12):
@@ -337,26 +355,39 @@ class IsaacBatchEvaluator:
         room = self.cfg["environment"]["room"]
         sx, sy, sz = (float(v) for v in room["size_m"])
         t = float(room["wall_thickness_m"])
-        self._box(f"{root}/Room/Floor", (0, 0, -t / 2), (sx, sy, t), room["floor_color"], Gf, Sdf, UsdGeom, UsdPhysics, UsdShade)
+        floor_material = room.get("floor_material", {})
+        wall_material = room.get("wall_material", {})
+        self._shape(f"{root}/Room/Floor", "box", (0, 0, -t / 2), (sx, sy, t), room["floor_color"], floor_material, True, Gf, Sdf, UsdGeom, UsdPhysics, UsdShade)
         walls = [
             ("WallXPos", (sx / 2 + t / 2, 0, sz / 2), (t, sy, sz)),
             ("WallXNeg", (-sx / 2 - t / 2, 0, sz / 2), (t, sy, sz)),
             ("WallYPos", (0, sy / 2 + t / 2, sz / 2), (sx, t, sz)),
             ("WallYNeg", (0, -sy / 2 - t / 2, sz / 2), (sx, t, sz)),
         ]
+        if room.get("has_roof", False):
+            walls.append(("Roof", (0, 0, sz + t / 2), (sx, sy, t)))
         for name, position, size in walls:
-            self._box(f"{root}/Room/{name}", position, size, room["wall_color"], Gf, Sdf, UsdGeom, UsdPhysics, UsdShade)
-        for obstacle in self.cfg["environment"].get("obstacles", []):
+            self._shape(f"{root}/Room/{name}", "box", position, size, room["wall_color"], wall_material, True, Gf, Sdf, UsdGeom, UsdPhysics, UsdShade)
+        for index, obstacle in enumerate(self.cfg["environment"].get("obstacles", [])):
             if not obstacle.get("enabled", True):
                 continue
-            if obstacle.get("kind", "box") not in {"box", "wall"}:
-                print(f"WARNING: training backend ignores non-box obstacle {obstacle.get('name')}")
-                continue
-            self._box(
-                f"{root}/Obstacles/{obstacle['name']}", obstacle["position_m"], obstacle["size_m"],
-                obstacle.get("color", [0.8, 0.2, 0.2]), Gf, Sdf, UsdGeom, UsdPhysics, UsdShade,
+            material = {
+                "opacity": obstacle.get("opacity", 1.0),
+                "roughness": obstacle.get("roughness", 0.65),
+                "metallic": obstacle.get("metallic", 0.0),
+                "reflectance": obstacle.get("reflectance", 0.25),
+            }
+            name = re.sub(r"[^A-Za-z0-9_]", "_", str(obstacle.get("name", f"obstacle_{index:03d}")))
+            self._shape(
+                f"{root}/Obstacles/{index:03d}_{name}",
+                str(obstacle.get("kind", "box")),
+                obstacle["position_m"],
+                obstacle["size_m"],
+                obstacle.get("color", [0.8, 0.2, 0.2]),
+                material,
+                bool(obstacle.get("collision", True)),
+                Gf, Sdf, UsdGeom, UsdPhysics, UsdShade,
             )
-
 
     def _build_custom_assets(self, root, Gf, UsdGeom, stage_utils) -> None:
         for index, asset in enumerate(self.cfg["environment"].get("custom_assets", [])):
@@ -395,6 +426,8 @@ class IsaacBatchEvaluator:
 
     def _build_landmark(self, root, Gf, Sdf, UsdGeom, UsdLux, UsdShade) -> None:
         landmark = self.cfg["environment"]["landmark"]
+        if not landmark.get("enabled", True):
+            return
         position = [float(v) for v in landmark["position_m"]]
         color = [float(v) / 255.0 for v in landmark["rgb_255"]]
         sphere = UsdGeom.Sphere.Define(self._stage, f"{root}/Landmark/VisibleSphere")
@@ -407,28 +440,89 @@ class IsaacBatchEvaluator:
         shader.CreateIdAttr("UsdPreviewSurface")
         shader.CreateInput("diffuseColor", Sdf.ValueTypeNames.Color3f).Set(Gf.Vec3f(*color))
         emissive_scale = max(0.0, float(landmark.get("emissive_intensity", 1.0)))
-        emissive_color = Gf.Vec3f(*[component * emissive_scale for component in color])
-        shader.CreateInput("emissiveColor", Sdf.ValueTypeNames.Color3f).Set(emissive_color)
-        # USD Preview Surface does not expose a portable emissiveIntensity input in
-        # every Isaac/OpenUSD version. Scaling emissiveColor is compatible across
-        # the versions used by the reference projects.
+        shader.CreateInput("emissiveColor", Sdf.ValueTypeNames.Color3f).Set(Gf.Vec3f(*[component * emissive_scale for component in color]))
         material.CreateSurfaceOutput().ConnectToSource(shader.ConnectableAPI(), "surface")
         UsdShade.MaterialBindingAPI.Apply(sphere.GetPrim()).Bind(material)
         light = UsdLux.SphereLight.Define(self._stage, f"{root}/Landmark/Light")
         light.CreateRadiusAttr(float(landmark["radius_m"]))
         light.CreateIntensityAttr(float(landmark["light_intensity"]))
         light.CreateColorAttr(Gf.Vec3f(*color))
+        try:
+            light.CreateExposureAttr(float(landmark.get("exposure", 0.0)))
+        except Exception:
+            pass
         UsdGeom.Xformable(light.GetPrim()).AddTranslateOp().Set(Gf.Vec3d(*position))
 
-    def _box(self, path, position, size, color, Gf, Sdf, UsdGeom, UsdPhysics, UsdShade) -> None:
-        cube = UsdGeom.Cube.Define(self._stage, path)
-        cube.CreateSizeAttr(1.0)
-        cube.CreateDisplayColorAttr([Gf.Vec3f(*[float(v) for v in color])])
-        xform = UsdGeom.Xformable(cube.GetPrim())
+    def _shape(self, path, kind, position, size, color, material_cfg, collision, Gf, Sdf, UsdGeom, UsdPhysics, UsdShade) -> None:
+        kind = str(kind).lower()
+        if kind in {"sphere"}:
+            geometry = UsdGeom.Sphere.Define(self._stage, path)
+            geometry.CreateRadiusAttr(0.5)
+        elif kind in {"cylinder", "pillar"}:
+            geometry = UsdGeom.Cylinder.Define(self._stage, path)
+            geometry.CreateRadiusAttr(0.5)
+            geometry.CreateHeightAttr(1.0)
+            geometry.CreateAxisAttr("Z")
+        else:
+            geometry = UsdGeom.Cube.Define(self._stage, path)
+            geometry.CreateSizeAttr(1.0)
+        prim = geometry.GetPrim()
+        xform = UsdGeom.Xformable(prim)
         xform.ClearXformOpOrder()
         xform.AddTranslateOp().Set(Gf.Vec3d(*[float(v) for v in position]))
         xform.AddScaleOp().Set(Gf.Vec3d(*[float(v) for v in size]))
-        UsdPhysics.CollisionAPI.Apply(cube.GetPrim())
+        material = self._create_material(path, color, material_cfg, Gf, Sdf, UsdShade)
+        UsdShade.MaterialBindingAPI.Apply(prim).Bind(material)
+        if collision:
+            UsdPhysics.CollisionAPI.Apply(prim)
+
+    def _create_material(self, path, color, material_cfg, Gf, Sdf, UsdShade):
+        material_path = f"{path}_Material"
+        material = UsdShade.Material.Define(self._stage, material_path)
+        shader = UsdShade.Shader.Define(self._stage, f"{material_path}/Shader")
+        shader.CreateIdAttr("UsdPreviewSurface")
+        rgb = [max(0.0, min(1.0, float(v))) for v in color]
+        shader.CreateInput("diffuseColor", Sdf.ValueTypeNames.Color3f).Set(Gf.Vec3f(*rgb))
+        shader.CreateInput("opacity", Sdf.ValueTypeNames.Float).Set(float(material_cfg.get("opacity", 1.0)))
+        shader.CreateInput("roughness", Sdf.ValueTypeNames.Float).Set(float(material_cfg.get("roughness", 0.65)))
+        shader.CreateInput("metallic", Sdf.ValueTypeNames.Float).Set(float(material_cfg.get("metallic", 0.0)))
+        reflectance = max(0.0, min(1.0, float(material_cfg.get("reflectance", 0.25))))
+        shader.CreateInput("specularColor", Sdf.ValueTypeNames.Color3f).Set(Gf.Vec3f(reflectance, reflectance, reflectance))
+        material.CreateSurfaceOutput().ConnectToSource(shader.ConnectableAPI(), "surface")
+        return material
+
+    def _box(self, path, position, size, color, Gf, Sdf, UsdGeom, UsdPhysics, UsdShade) -> None:
+        self._shape(path, "box", position, size, color, {}, True, Gf, Sdf, UsdGeom, UsdPhysics, UsdShade)
+
+    def _configure_preview_camera(self, Gf, UsdGeom) -> None:
+        preview = self.cfg.get("scenario_preview", {}).get("camera", {})
+        room_size = [float(v) for v in self.cfg["environment"]["room"]["size_m"]]
+        look_at = [float(v) for v in preview.get("look_at_m", [0.0, 0.0, room_size[2] * 0.4])]
+        azimuth = math.radians(float(preview.get("azimuth_deg", 45.0)))
+        elevation = math.radians(float(preview.get("elevation_deg", 28.0)))
+        extent = max(room_size[0], room_size[1], room_size[2])
+        distance = extent * float(preview.get("distance_scale", 1.25)) + float(preview.get("padding_m", 0.5))
+        horizontal = distance * math.cos(elevation)
+        eye = Gf.Vec3d(
+            look_at[0] + horizontal * math.cos(azimuth),
+            look_at[1] + horizontal * math.sin(azimuth),
+            look_at[2] + distance * math.sin(elevation),
+        )
+        target = Gf.Vec3d(*look_at)
+        camera_path = "/World/ScenarioPreviewCamera"
+        camera = UsdGeom.Camera.Define(self._stage, camera_path)
+        camera.CreateFocalLengthAttr(float(preview.get("focal_length_mm", 35.0)))
+        xform = UsdGeom.Xformable(camera.GetPrim())
+        xform.ClearXformOpOrder()
+        xform.AddTransformOp().Set(Gf.Matrix4d().SetLookAt(eye, target, Gf.Vec3d(0, 0, 1)).GetInverse())
+        self._preview_camera_path = camera_path
+        try:
+            from omni.kit.viewport.utility import get_active_viewport
+            viewport = get_active_viewport()
+            if viewport is not None:
+                viewport.set_active_camera(camera_path)
+        except Exception as exc:
+            print(f"WARNING: could not select preview camera: {exc}")
 
     def _resolve_crazyflie_asset(self, omni_client, get_assets_root_path) -> str:
         explicit = str(self.cfg["environment"]["crazyflie"].get("usd_path", "")).strip()

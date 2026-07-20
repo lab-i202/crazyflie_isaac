@@ -119,6 +119,7 @@ CREATE TABLE IF NOT EXISTS agent_state_events (
     env_index INTEGER NOT NULL,
     previous_state TEXT,
     new_state TEXT NOT NULL,
+    current_state TEXT NOT NULL,
     reason TEXT,
     simulation_step INTEGER,
     created_at TEXT NOT NULL

@@ -1,0 +1,7 @@
+{
+  "state": "failed",
+  "config_path": "C:\\Users\\Admin\\Documents\\Github\\crazyflie_isaac\\src\\crazyflie_brkga\\config\\default.json",
+  "revision": 1784568627865442600,
+  "frame_index": 8,
+  "error": "Traceback (most recent call last):\n  File \"C:\\Users\\Admin\\Documents\\Github\\crazyflie_isaac\\src\\crazyflie_brkga\\detector_capture_isaac.py\", line 92, in main\n    write_json(DETECTOR_STATUS, {\"state\": \"running\", \"config_path\": str(config_path), \"revision\": last_revision, \"frame_index\": frame_index, \"updated_at_unix\": time.time()})\n  File \"C:\\Users\\Admin\\Documents\\Github\\crazyflie_isaac\\src\\crazyflie_brkga\\cfbrkga\\runtime_files.py\", line 32, in write_json\n    temporary.replace(path)\n  File \"C:\\Users\\Admin\\anaconda3\\envs\\env_isaaclab\\Lib\\pathlib.py\", line 1188, in replace\n    os.replace(self, target)\nPermissionError: [WinError 5] Access is denied: 'C:\\\\Users\\\\Admin\\\\Documents\\\\Github\\\\crazyflie_isaac\\\\src\\\\crazyflie_brkga\\\\outputs\\\\runtime\\\\landmark_detector\\\\status.json.tmp' -> 'C:\\\\Users\\\\Admin\\\\Documents\\\\Github\\\\crazyflie_isaac\\\\src\\\\crazyflie_brkga\\\\outputs\\\\runtime\\\\landmark_detector\\\\status.json'\n"
+}

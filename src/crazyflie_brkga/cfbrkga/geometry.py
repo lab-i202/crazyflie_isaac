@@ -30,7 +30,7 @@ class RoomGeometry:
         self.max_range = float(cfg["environment"]["sensors"]["max_range_m"])
         self.obstacles: list[AABB] = []
         for item in cfg["environment"].get("obstacles", []):
-            if not item.get("enabled", True) or item.get("kind", "box") not in {"box", "wall"}:
+            if not item.get("enabled", True):
                 continue
             px, py, pz = (float(v) for v in item["position_m"])
             ox, oy, oz = (float(v) for v in item["size_m"])
