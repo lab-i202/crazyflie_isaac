@@ -1,0 +1,47 @@
+crazyflie_isaac_brkga/
+PROJECT_TREE.txt
+README.md
+VALIDATION.md
+assets
+    robots
+        crazyflie
+            README.md
+cfbrkga
+    __init__.py
+    brkga.py
+    checkpoint.py
+    config.py
+    csv_export.py
+    database.py
+    debug_recorder.py
+    geometry.py
+    gui.py
+    image_processing.py
+    isaac_backend.py
+    mock_evaluator.py
+    model.py
+    reward.py
+    training_loop.py
+    types.py
+config
+    default.json
+    isaac_integrity.json
+    smoke.json
+dashboard
+    app.py
+database_schema.sql
+main.py
+pytest.ini
+requirements-core.txt
+requirements-dashboard.txt
+run_dashboard.bat
+run_gui.bat
+run_isaac_integrity.bat
+run_mock_test.bat
+run_training.bat
+tests
+    test_core.py
+    test_database.py
+    test_mock_smoke.py
+train_isaac.py
+train_mock.py

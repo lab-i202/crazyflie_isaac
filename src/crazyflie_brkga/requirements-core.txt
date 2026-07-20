@@ -1,0 +1,9 @@
+# Isaac Sim 5.1 camera/Replicator bindings are not compatible with NumPy 2.x.
+numpy==1.26.4
+
+# OpenCV 4.12+ may pull NumPy 2.x on Python 3.11. Keep this compatible pair.
+opencv-python==4.11.0.86
+
+pillow>=10.0,<12.0
+torch>=2.0
+pytest>=8.0,<9.0

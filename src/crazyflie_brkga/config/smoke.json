@@ -1,0 +1,171 @@
+{
+  "project": {
+    "name": "crazyflie_brkga_smoke",
+    "note": "Software-only integrity smoke test."
+  },
+  "app": {
+    "headless": false,
+    "width": 1280,
+    "height": 720,
+    "renderer": "RayTracedLighting"
+  },
+  "environment": {
+    "num_parallel_envs": 2,
+    "env_spacing_m": 6.0,
+    "ambient_light_intensity": 350.0,
+    "room": {
+      "size_m": [
+        4.0,
+        3.0,
+        2.0
+      ],
+      "wall_thickness_m": 0.05,
+      "floor_color": [
+        0.25,
+        0.25,
+        0.28
+      ],
+      "wall_color": [
+        0.65,
+        0.68,
+        0.72
+      ],
+      "camera_background_rgb": [
+        35,
+        35,
+        35
+      ]
+    },
+    "crazyflie": {
+      "usd_path": "",
+      "collision_radius_m": 0.12,
+      "initial_pose": {
+        "position_m": [
+          -1.4,
+          -0.9,
+          0.7
+        ],
+        "yaw_deg": 0.0
+      },
+      "spawn_randomization_m": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "control_backend": "kinematic"
+    },
+    "landmark": {
+      "position_m": [
+        1.55,
+        0.0,
+        0.8
+      ],
+      "rgb_255": [
+        255,
+        225,
+        20
+      ],
+      "radius_m": 0.1,
+      "emissive_intensity": 8.0,
+      "light_intensity": 2500.0
+    },
+    "sensors": {
+      "max_range_m": 4.0,
+      "horizontal_collision_threshold_m": 0.15,
+      "top_collision_altitude_m": 1.82,
+      "range_backend": "analytic"
+    },
+    "obstacles": [],
+    "custom_assets": []
+  },
+  "camera": {
+    "width": 320,
+    "height": 240,
+    "horizontal_fov_deg": 74.0,
+    "focal_length_mm": 24.0,
+    "horizontal_aperture_mm": 20.955,
+    "local_position_m": [
+      0.08,
+      0.0,
+      0.03
+    ],
+    "warmup_updates": 8,
+    "updates_per_control_step": 1
+  },
+  "vision": {
+    "hsv_lower": [
+      15,
+      80,
+      170
+    ],
+    "hsv_upper": [
+      45,
+      255,
+      255
+    ],
+    "min_area_px": 12.0,
+    "max_area_fraction": 0.45,
+    "min_circularity": 0.35,
+    "morphology_kernel": 3
+  },
+  "policy": {
+    "layers": [
+      2,
+      128,
+      128,
+      5
+    ],
+    "device": "cuda",
+    "decoder": {
+      "mode": "legacy_linear",
+      "lower_bound": -2.0,
+      "upper_bound": 10.0
+    }
+  },
+  "brkga": {
+    "population_size": 4,
+    "generations": 1,
+    "elite_fraction": 0.2,
+    "mutant_fraction": 0.3,
+    "elite_inheritance_probability": 0.65,
+    "random_seed": 42,
+    "episode_seeds": [
+      1001
+    ]
+  },
+  "mission": {
+    "control_step_s": 0.1,
+    "max_steps": 20,
+    "front_tof_min_m": 0.0,
+    "front_tof_max_m": 4.0,
+    "success_front_tof_m": 0.55,
+    "lost_landmark_max_steps": 20,
+    "actions": {
+      "forward_speed_m_s": 0.1,
+      "vertical_speed_m_s": 0.1,
+      "yaw_rate_rad_s": 0.05
+    },
+    "reward": {
+      "step_penalty_scale": 0.5,
+      "time_penalty": 0.01,
+      "collision_penalty": -20.0,
+      "lost_landmark_penalty": -10.0,
+      "timeout_penalty": -2.0,
+      "failure_terminal_penalty": -3.0,
+      "success_reward": 10.0,
+      "near_target_partial_reward": 0.5,
+      "worker_error_fitness": -1000000.0
+    }
+  },
+  "data": {
+    "output_root": "outputs/experiments",
+    "execution_mode": "integrity",
+    "integrity": {
+      "save_raw_data": true,
+      "save_frames": true,
+      "frame_stride": 5,
+      "store_steps_in_database": true
+    },
+    "heartbeat_steps": 10
+  }
+}
